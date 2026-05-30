@@ -162,6 +162,47 @@ class ProjectLayout:
         """Path to the staging directory inside ``.aip-loom``."""
         return self.aip_loom_dir / "staging"
 
+    @property
+    def briefs_dir(self) -> Path:
+        """Path to the briefs directory inside ``.aip-loom``."""
+        return self.aip_loom_dir / "briefs"
+
+    def brief_path(self, chunk_id: str) -> Path:
+        """Resolve the path for a brief Markdown file.
+
+        Parameters
+        ----------
+        chunk_id:
+            A valid chunk ID like ``"C-0001"`` or ``"CH-0012"``.
+
+        Returns
+        -------
+        Path
+            The absolute path to the brief file (e.g.
+            ``<root>/.aip-loom/briefs/C-0001.md``).
+
+        Raises
+        ------
+        LayoutError
+            If *chunk_id* does not match the canonical pattern, or if
+            the resolved path escapes the project root.
+        """
+        if not _CHUNK_ID_RE.match(chunk_id):
+            raise LayoutError(
+                LoomError(
+                    code=CHUNK_ID_INVALID,
+                    message=(
+                        f"Invalid chunk ID {chunk_id!r}: "
+                        "must match pattern like 'C-0001' before path construction"
+                    ),
+                    detail={"chunk_id": chunk_id},
+                )
+            )
+
+        path = self.briefs_dir / f"{chunk_id}.md"
+        self.validate_path(path)
+        return path
+
     # -- ledger files -------------------------------------------------------
 
     @property

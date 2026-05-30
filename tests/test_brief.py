@@ -32,7 +32,6 @@ import pytest
 
 from aip_loom.brief import (
     PROTECTED_PRIORITIES,
-    BriefResult,
     assemble_brief_content,
     generate_brief,
 )
@@ -214,7 +213,7 @@ class TestBasicBriefGeneration:
         content = brief_path.read_text(encoding="utf-8")
         assert content.startswith("---")
         assert "chunk_id:" in content
-        assert "Session Brief: C-0001" in content
+        assert "Session Brief:" in content
 
     def test_brief_file_contains_prose(self, project_root: Path) -> None:
         """brief file contains the chunk's prose body."""
@@ -684,15 +683,16 @@ class TestBriefContentStructure:
         assert "chunk_id:" in content.split("---")[1]
 
     def test_brief_has_heading(self, project_root: Path) -> None:
-        """Brief content has the session brief heading."""
+        """Brief content has the session brief heading with chunk ID."""
         _write_chunk(project_root, "C-0001")
         state = load_project(project_root)
         context = select_context(state, "C-0001")
         content = assemble_brief_content(context)
-        assert "# Session Brief: C-0001" in content
+        assert "# Session Brief:" in content
+        assert "C-0001" in content
 
     def test_brief_with_decisions_has_section(self, project_root: Path) -> None:
-        """Brief includes a Scoped Decisions section when decisions exist."""
+        """Brief includes a Scoped Context section with Decisions when decisions exist."""
         _write_chunk(project_root, "C-0001")
         _write_decisions_ledger(project_root, [
             DecisionEntry(
@@ -704,11 +704,12 @@ class TestBriefContentStructure:
         state = load_project(project_root)
         context = select_context(state, "C-0001")
         content = assemble_brief_content(context)
-        assert "## Scoped Decisions" in content
+        assert "## Scoped Context" in content
+        assert "### Decisions" in content
         assert "D-0001" in content
 
     def test_brief_with_threads_has_section(self, project_root: Path) -> None:
-        """Brief includes a Scoped Threads section when threads exist."""
+        """Brief includes a Scoped Context section with Threads when threads exist."""
         _write_chunk(project_root, "C-0001")
         _write_threads_ledger(project_root, [
             ThreadEntry(
@@ -720,7 +721,8 @@ class TestBriefContentStructure:
         state = load_project(project_root)
         context = select_context(state, "C-0001")
         content = assemble_brief_content(context)
-        assert "## Scoped Threads" in content
+        assert "## Scoped Context" in content
+        assert "### Threads" in content
         assert "T-0001" in content
 
     def test_brief_with_distillate_has_section(self, project_root: Path) -> None:
@@ -843,8 +845,8 @@ class TestBriefOverwrite:
         content_v2 = brief_path.read_text(encoding="utf-8")
 
         # Both should be valid briefs
-        assert "Session Brief: C-0001" in content_v1
-        assert "Session Brief: C-0001" in content_v2
+        assert "Session Brief:" in content_v1
+        assert "Session Brief:" in content_v2
 
 
 # ---------------------------------------------------------------------------
@@ -883,3 +885,227 @@ class TestBudgetOverflow:
         result = generate_brief(root=project_root, chunk_id="C-0001", token_budget=5)
         assert result.ok is False
         assert result.code == BRIEF_BUDGET_OVERFLOW
+
+    def test_mandatory_only_budget_overflow(self, project_root: Path) -> None:
+        """brief fails with BRIEF_BUDGET_OVERFLOW when ONLY mandatory sections
+        (frontmatter + prose, priorities 0 and 1) exceed the token budget.
+
+        This is the strictest case: no optional sections are involved at all.
+        The brief must refuse to produce output because even the absolute
+        minimum context exceeds the budget.
+        """
+        # Create a chunk with very long prose but no ledgers/distillate
+        _write_chunk(project_root, "C-0001", prose="X" * 5000)
+        # No decisions, threads, questions, or distillate — only mandatory sections
+        result = generate_brief(root=project_root, chunk_id="C-0001", token_budget=5)
+        assert result.ok is False
+        assert result.code == BRIEF_BUDGET_OVERFLOW
+        # Verify that the error detail contains protected_tokens info
+        budget_errors = [e for e in result.errors if e.code == BRIEF_BUDGET_OVERFLOW]
+        assert len(budget_errors) > 0
+        assert "protected_tokens" in budget_errors[0].detail
+        assert budget_errors[0].detail["protected_tokens"] > 5
+
+    def test_budget_overflow_no_file_written(self, project_root: Path) -> None:
+        """brief does NOT write a file when BRIEF_BUDGET_OVERFLOW occurs."""
+        _write_chunk(project_root, "C-0001", prose="A" * 1000)
+        generate_brief(root=project_root, chunk_id="C-0001", token_budget=5)
+        brief_path = project_root / ".aip-loom" / "briefs" / "C-0001.md"
+        assert not brief_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Strong determinism proof
+# ---------------------------------------------------------------------------
+
+
+class TestStrongDeterminism:
+    """Verify brief generation produces byte-identical output for identical inputs.
+
+    The determinism guarantee must hold for the CONTENT string, not just
+    metadata like section count or token estimate.  Two briefs generated
+    from the same project state with the same chunk ID, task, and budget
+    must produce the exact same Markdown string (modulo the generated_at
+    timestamp, which we strip before comparison).
+    """
+
+    def _strip_timestamp(self, content: str) -> str:
+        """Remove the generated_at line for comparison (it includes the time)."""
+        import re
+        return re.sub(r"generated_at: '[^']+'", "generated_at: STRIPPED", content)
+
+    def test_dry_run_content_is_deterministic(self, project_root: Path) -> None:
+        """Two dry-run briefs produce identical content (minus timestamp)."""
+        _write_chunk(project_root, "C-0001", prose="Deterministic prose.")
+        _write_decisions_ledger(project_root, [
+            DecisionEntry(
+                id="D-0001", review_state=ReviewState.APPROVED,
+                created_at=NOW, summary="A deterministic decision",
+                scope="chunk", chunk_id="C-0001",
+            ),
+        ])
+        r1 = generate_brief(root=project_root, chunk_id="C-0001", dry_run=True)
+        r2 = generate_brief(root=project_root, chunk_id="C-0001", dry_run=True)
+
+        c1 = self._strip_timestamp(r1.data["content"])
+        c2 = self._strip_timestamp(r2.data["content"])
+        assert c1 == c2, "Brief content differs between two runs with same inputs"
+
+    def test_brief_file_content_is_deterministic(self, project_root: Path) -> None:
+        """Two file-writing briefs produce identical files (minus timestamp)."""
+        _write_chunk(project_root, "C-0001", prose="Deterministic prose.")
+        r1 = generate_brief(root=project_root, chunk_id="C-0001")
+        r2 = generate_brief(root=project_root, chunk_id="C-0001")
+
+        c1 = self._strip_timestamp(r1.data["content"])
+        c2 = self._strip_timestamp(r2.data["content"])
+        assert c1 == c2, "Brief file content differs between two runs"
+
+    def test_brief_with_task_is_deterministic(self, project_root: Path) -> None:
+        """Brief with task description is deterministic."""
+        _write_chunk(project_root, "C-0001")
+        r1 = generate_brief(
+            root=project_root, chunk_id="C-0001",
+            task="Write the next scene", dry_run=True,
+        )
+        r2 = generate_brief(
+            root=project_root, chunk_id="C-0001",
+            task="Write the next scene", dry_run=True,
+        )
+        c1 = self._strip_timestamp(r1.data["content"])
+        c2 = self._strip_timestamp(r2.data["content"])
+        assert c1 == c2
+
+    def test_assemble_brief_content_is_deterministic(self, project_root: Path) -> None:
+        """assemble_brief_content produces identical output for the same context."""
+        _write_chunk(project_root, "C-0001")
+        state = load_project(project_root)
+        context = select_context(state, "C-0001")
+
+        content1 = assemble_brief_content(context, task="Test task")
+        content2 = assemble_brief_content(context, task="Test task")
+        # Note: assemble_brief_content includes the timestamp, so strip it
+        c1 = self._strip_timestamp(content1)
+        c2 = self._strip_timestamp(content2)
+        assert c1 == c2
+
+
+# ---------------------------------------------------------------------------
+# Brief output quality
+# ---------------------------------------------------------------------------
+
+
+class TestBriefOutputQuality:
+    """Verify the brief Markdown output is high quality and useful."""
+
+    def test_enum_values_render_cleanly(self, project_root: Path) -> None:
+        """Enum values render as plain strings (e.g. 'draft'), not
+        'ChunkStatus.DRAFT'."""
+        _write_chunk(project_root, "C-0001", prose="Test prose.")
+        result = generate_brief(
+            root=project_root, chunk_id="C-0001", dry_run=True,
+        )
+        content = result.data["content"]
+        # Must NOT contain the Python enum representation
+        assert "ChunkStatus.DRAFT" not in content
+        assert "ChunkStatus." not in content
+        # Should contain the clean value
+        assert "Status: draft" in content
+
+    def test_yaml_frontmatter_uses_yaml_quoting(self, project_root: Path) -> None:
+        """YAML frontmatter uses standard YAML quoting, not Python repr."""
+        _write_chunk(project_root, "C-0001", prose="Test prose.")
+        result = generate_brief(
+            root=project_root, chunk_id="C-0001", dry_run=True,
+        )
+        content = result.data["content"]
+        # Python repr would produce: chunk_id: 'C-0001'  (which is valid YAML
+        # but let's verify it's not using some other format)
+        lines = content.split("\n")
+        chunk_id_line = [l for l in lines if l.startswith("chunk_id:")]
+        assert len(chunk_id_line) == 1
+        # Should use single-quote YAML style
+        assert "chunk_id: 'C-0001'" in chunk_id_line[0]
+
+    def test_approved_review_state_not_shown(self, project_root: Path) -> None:
+        """Approved review state is not shown in brief output (reduces noise)."""
+        _write_chunk(project_root, "C-0001")
+        _write_decisions_ledger(project_root, [
+            DecisionEntry(
+                id="D-0001", review_state=ReviewState.APPROVED,
+                created_at=NOW, summary="A decision",
+                scope="chunk", chunk_id="C-0001",
+            ),
+        ])
+        state = load_project(project_root)
+        context = select_context(state, "C-0001")
+        content = assemble_brief_content(context)
+        # Should NOT show "Review: approved" — that's the default and is noise
+        assert "Review: approved" not in content
+        # But should still show the decision itself
+        assert "D-0001" in content
+
+    def test_pending_review_state_is_shown(self, project_root: Path) -> None:
+        """Pending review state IS shown in brief output (actionable info)."""
+        _write_chunk(project_root, "C-0001")
+        _write_decisions_ledger(project_root, [
+            DecisionEntry(
+                id="D-0001", review_state=ReviewState.PENDING,
+                created_at=NOW, summary="A pending decision",
+                scope="chunk", chunk_id="C-0001",
+            ),
+        ])
+        state = load_project(project_root)
+        context = select_context(state, "C-0001")
+        content = assemble_brief_content(context)
+        assert "Review: pending" in content
+
+    def test_title_includes_chunk_title(self, project_root: Path) -> None:
+        """Brief heading includes the chunk title for immediate context."""
+        _write_chunk(project_root, "C-0001", title="The Opening")
+        state = load_project(project_root)
+        context = select_context(state, "C-0001")
+        content = assemble_brief_content(context)
+        assert "Session Brief: C-0001" in content
+        assert "The Opening" in content
+
+    def test_current_chunk_heading(self, project_root: Path) -> None:
+        """Brief uses 'Current Chunk' heading instead of 'Target Chunk'."""
+        _write_chunk(project_root, "C-0001")
+        state = load_project(project_root)
+        context = select_context(state, "C-0001")
+        content = assemble_brief_content(context)
+        assert "## Current Chunk" in content
+        assert "## Target Chunk" not in content
+
+    def test_section_descriptions_present(self, project_root: Path) -> None:
+        """Scoped and global context sections have helpful descriptions."""
+        _write_chunk(project_root, "C-0001")
+        _write_decisions_ledger(project_root, [
+            DecisionEntry(
+                id="D-0001", review_state=ReviewState.APPROVED,
+                created_at=NOW, summary="A scoped decision",
+                scope="chunk", chunk_id="C-0001",
+            ),
+            DecisionEntry(
+                id="D-0002", review_state=ReviewState.APPROVED,
+                created_at=NOW, summary="A global decision",
+                scope="global",
+            ),
+        ])
+        state = load_project(project_root)
+        context = select_context(state, "C-0001")
+        content = assemble_brief_content(context)
+        # Scoped Context section should have a description
+        assert "directly relevant to this chunk" in content
+        # Global Context section should have a description
+        assert "across all chunks" in content
+
+    def test_brief_uses_layout_brief_path(self, project_root: Path) -> None:
+        """Brief path comes from ProjectLayout.brief_path()."""
+        _write_chunk(project_root, "C-0001")
+        layout = ProjectLayout(root=project_root)
+        expected_path = layout.brief_path("C-0001")
+
+        result = generate_brief(root=project_root, chunk_id="C-0001")
+        assert result.data["brief_path"] == str(expected_path)

@@ -61,10 +61,12 @@ or custom locking elsewhere in the codebase is a **spec violation**.
   - Provides: ``ProjectLayout(root)`` (frozen dataclass), ``LayoutError``.
   - Properties: ``manifest_path``, ``distillate_path``, ``sessions_path``,
     ``comments_path``, ``chunks_dir``, ``ledgers_dir``, ``archive_dir``,
-    ``aip_loom_dir``, ``staging_dir``, ``decisions_ledger_path``,
-    ``threads_ledger_path``, ``questions_ledger_path``, ``lock_path``.
+    ``aip_loom_dir``, ``staging_dir``, ``briefs_dir``,
+    ``decisions_ledger_path``, ``threads_ledger_path``,
+    ``questions_ledger_path``, ``lock_path``.
   - Methods: ``chunk_path(chunk_id)`` (validates ID against schema regex
     before path construction), ``archive_chunk_path(chunk_id)``,
+    ``brief_path(chunk_id)`` (resolves brief file path with ID validation),
     ``validate_path(path)`` (rejects ``..``, symlinks escaping root,
     resolved paths outside root), ``is_project_initialized()``.
   - **ID validation before path construction**: ``chunk_path()`` validates
@@ -384,7 +386,7 @@ implement its own context selection logic.  Token estimation **must** go
 through `tokens.py` only.  Duplicating selection or estimation code
 elsewhere is a **spec violation**.
 
-- **Brief context engine: src/aip_loom/brief_context.py** *(implemented — Chunk 11)*
+- **Brief context engine: src/aip_loom/brief_context.py** *(implemented — Chunk 11, stabilized)*
   - This is the **single authority** for selecting the context that
     ``brief`` would assemble for a given chunk.  Both ``inspect`` and
     ``brief`` must call :func:`select_context` here — no other module
@@ -411,6 +413,13 @@ elsewhere is a **spec violation**.
     to disk, even when used by ``brief``.
   - **Deterministic**: Given the same project state and chunk ID, the
     output is always the same.
+  - **Enum rendering**: All enum values (``ChunkStatus``,
+    ``ReviewState``, ``ThreadState``) render via ``.value`` to produce
+    clean lowercase strings (e.g. ``draft``, ``approved``, ``open``),
+    never Python enum representations like ``ChunkStatus.DRAFT``.
+  - **Noise reduction**: Approved review states are not included in
+    formatted output (they are the default).  Only pending review
+    states are shown as actionable information.
   - **to_dict()**: ``SelectedContext.to_dict()`` produces a complete
     JSON-serialisable dictionary used by the ``--json`` CLI output.
   - Error codes used: ``CHUNK_NOT_FOUND``.
@@ -448,24 +457,28 @@ brief files.  Brief generation **must** call `select_context()` from
 `brief_context.py` as the **only** source of context selection — no
 duplication of selection logic is permitted.
 
-- **Brief service: src/aip_loom/brief.py** *(implemented — Chunk 12)*
+- **Brief service: src/aip_loom/brief.py** *(implemented — Chunk 12, stabilized)*
   - This is the **single authority** for assembling and writing session
     briefs.  It adds rendering and file-writing logic on top of the
     shared context selection engine — it never duplicates selection logic.
   - Provides: ``generate_brief(root, chunk_id, task, dry_run, force,
     token_budget)`` → ``CommandResult``, ``assemble_brief_content(context,
     task)`` → ``str``, ``BriefResult`` (frozen dataclass),
-    ``PROTECTED_PRIORITIES`` (frozenset).
+    ``PROTECTED_PRIORITIES`` (frozenset), ``_yaml_quote()`` (helper).
   - **Zero duplication**: ``generate_brief`` calls ``select_context()``
     from ``brief_context.py`` as the single source of truth.  No other
     function in this module independently decides what context to include.
   - **Protected sections**: Sections with priorities in
     ``PROTECTED_PRIORITIES`` ({0, 1, 2, 3, 4, 6}) are never dropped
     from a brief.  If any protected section would be dropped due to
-    budget, or if the budget is exceeded by mandatory sections, the
-    brief fails with ``BRIEF_BUDGET_OVERFLOW`` rather than producing an
-    incomplete brief.  Only priorities 5 (adjacent summaries), 7
+    budget, or if the budget is exceeded by mandatory/protected sections,
+    the brief fails with ``BRIEF_BUDGET_OVERFLOW`` rather than producing
+    an incomplete brief.  Only priorities 5 (adjacent summaries), 7
     (global threads), and 8 (unresolved questions) can be dropped.
+  - **Mandatory-only overflow**: Even when NO optional sections exist and
+    ONLY mandatory sections (frontmatter + prose) exceed the budget, the
+    brief correctly fails with ``BRIEF_BUDGET_OVERFLOW`` — never produces
+    a misleading partial brief.
   - **Dirty/orphan chunk guards**: Brief fails for chunks with dirty
     checksums (``BRIEF_DIRTY_CHUNK``) or chunks not in the manifest
     order (``BRIEF_STALE_CHUNK``) unless ``--force`` is used.
@@ -477,22 +490,48 @@ duplication of selection logic is permitted.
     to disk.  The brief content is assembled and returned but the file
     write step is skipped entirely.
   - **Deterministic**: Given the same project state, chunk ID, task,
-    and token budget, the brief content is always identical.
+    and token budget, the brief content is always identical (modulo the
+    ``generated_at`` timestamp in the frontmatter).
   - **Human-readable output**: The brief is a well-structured Markdown
     file with YAML frontmatter containing metadata (chunk_id,
     generated_at, token_estimate, token_budget, schema_version,
-    section_count, dropped_count, task).
-  - **Brief file location**: ``.aip-loom/briefs/<chunk_id>.md`` — written
-    using ``safe_write_text()`` from ``fs.py`` for atomic writes.
+    section_count, dropped_count, task).  YAML frontmatter uses
+    standard YAML single-quote style (not Python ``repr``).
+  - **Brief file location**: ``.aip-loom/briefs/<chunk_id>.md`` — resolved
+    via ``ProjectLayout.brief_path(chunk_id)`` for single-authority path
+    resolution.  Written using ``safe_write_text()`` from ``fs.py`` for
+    atomic writes.
+  - **Section structure**: The brief organises context into clear sections:
+    "Current Chunk" (prose + metadata), "Distillate Anchor" (structural
+    summary), "Scoped Context" (decisions + threads directly relevant),
+    "Adjacent Chunks" (predecessor/successor summaries), "Global Context"
+    (project-wide decisions + threads), "Open Questions" (unresolved).
+    Each section includes a brief description explaining its purpose.
+  - **Noise reduction**: Approved review states are not shown in brief
+    output (they are the default).  Only pending review states are
+    displayed as actionable information.
+  - **Enum rendering**: All enum values (``ChunkStatus``, ``ReviewState``,
+    ``ThreadState``) render as clean lowercase strings (e.g. ``draft``,
+    ``open``, ``pending``), never as ``ChunkStatus.DRAFT``.
   - **Token consistency**: Token estimates in the brief match exactly
     what ``inspect`` would show for the same chunk and budget, because
     both commands use the same ``select_context()`` engine.
+  - **Content in result**: The assembled brief content is included in the
+    ``CommandResult.data["content"]`` field for programmatic access
+    (determinism verification, dry-run previews).
   - **to_dict()**: ``BriefResult.to_dict()`` produces a JSON-serialisable
     dictionary including chunk_id, brief_path, token_estimate,
     token_budget, section_count, dropped_count, dry_run, and content_length.
   - **CLI integration**: The ``brief`` CLI command delegates to
     ``generate_brief()`` via ``_run_brief()``.  Supports ``--task``,
     ``--dry-run``, ``--force``, and ``--json`` flags.
+  - **Template support**: Full template expansion is **deferred** to a
+    future chunk.  The current ``assemble_brief_content()`` function
+    produces structured Markdown that is sufficient for LLM consumption.
+    Adding a template engine (variable substitution, template file
+    discovery, escape handling) is a non-trivial feature that does not
+    yet have a clear use case — the current structure-first approach
+    is preferred until user feedback demands customisation.
   - Error codes used: ``CHUNK_NOT_FOUND``, ``BRIEF_BUDGET_OVERFLOW``,
     ``BRIEF_DIRTY_CHUNK``, ``BRIEF_STALE_CHUNK``, ``FILE_WRITE_ERROR``.
   - Warning codes used: ``BRIEF_FORCE_USED``, plus all warnings from

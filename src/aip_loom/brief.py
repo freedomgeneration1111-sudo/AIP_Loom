@@ -33,7 +33,7 @@ Design principles (BuildSpec §3A and Chunk 12 description):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -145,6 +145,17 @@ class BriefResult:
 # ---------------------------------------------------------------------------
 
 
+def _yaml_quote(value: str) -> str:
+    """Quote a string for YAML frontmatter, handling special characters.
+
+    Uses YAML single-quote style: wrap in single quotes and escape any
+    internal single quotes by doubling them.  This produces clean,
+    standard YAML rather than Python repr output.
+    """
+    escaped = value.replace("'", "''")
+    return f"'{escaped}'"
+
+
 def assemble_brief_content(
     context: SelectedContext,
     task: str = "",
@@ -155,6 +166,17 @@ def assemble_brief_content(
     formats it into a human-readable Markdown brief.  It does NOT make
     any selection decisions; those are handled entirely by
     :func:`select_context`.
+
+    The brief is structured for maximum utility to a writer or AI model:
+
+    1. **YAML frontmatter** — machine-readable metadata for tooling.
+    2. **Task** — the writing task the brief is assembled for.
+    3. **Current Chunk** — the target chunk's prose and metadata.
+    4. **Distillate Anchor** — structural summary of the chunk.
+    5. **Scoped Context** — decisions and threads directly relevant.
+    6. **Adjacent Chunks** — summaries of predecessor/successor.
+    7. **Global Context** — project-wide decisions and threads.
+    8. **Open Questions** — unresolved issues to consider.
 
     Parameters
     ----------
@@ -172,25 +194,29 @@ def assemble_brief_content(
     chunk_id = context.target_chunk_id
     token_count = context.total_token_estimate.token_count
 
-    # Build frontmatter
+    # Build YAML frontmatter (standard YAML quoting, not Python repr)
     fm_lines = [
-        f"chunk_id: {chunk_id!r}",
-        f"generated_at: {now!r}",
+        f"chunk_id: {_yaml_quote(chunk_id)}",
+        f"generated_at: {_yaml_quote(now)}",
         f"token_estimate: {token_count}",
         f"token_budget: {context.token_budget}",
-        f"schema_version: {SUPPORTED_SCHEMA_VERSION!r}",
+        f"schema_version: {_yaml_quote(SUPPORTED_SCHEMA_VERSION)}",
         f"section_count: {len(context.sections)}",
         f"dropped_count: {len(context.dropped_sections)}",
     ]
     if task:
-        # Escape any quotes in the task string
-        escaped_task = task.replace("'", "''")
-        fm_lines.append(f"task: {escaped_task!r}")
+        fm_lines.append(f"task: {_yaml_quote(task)}")
     frontmatter = "---\n" + "\n".join(fm_lines) + "\n---"
 
     # Build body
     parts: list[str] = [frontmatter, ""]
-    parts.append(f"# Session Brief: {chunk_id}")
+
+    # Title — include chunk metadata for immediate context
+    target = context.target_chunk
+    title_line = chunk_id
+    if target is not None:
+        title_line = f"{chunk_id} — {target.frontmatter.title}"
+    parts.append(f"# Session Brief: {title_line}")
     parts.append("")
 
     # Task description (if provided)
@@ -205,8 +231,8 @@ def assemble_brief_content(
     for section in context.sections:
         sections_by_type.setdefault(section.section_type, []).append(section)
 
-    # Target chunk
-    parts.append("## Target Chunk")
+    # --- Current Chunk (frontmatter + prose) ---
+    parts.append("## Current Chunk")
     parts.append("")
     for section in context.sections:
         if section.section_type == "chunk_frontmatter":
@@ -222,63 +248,98 @@ def assemble_brief_content(
             parts.append("")
             break
 
-    # Distillate anchor
+    # --- Distillate Anchor ---
     if "distillate_node" in sections_by_type:
         parts.append("## Distillate Anchor")
+        parts.append("")
+        parts.append(
+            "Structural summary of this chunk from the distillate index."
+        )
         parts.append("")
         for section in sections_by_type["distillate_node"]:
             parts.append(section.content)
             parts.append("")
 
-    # Scoped decisions
-    if "scoped_decision" in sections_by_type:
-        parts.append("## Scoped Decisions")
+    # --- Scoped Context ---
+    has_scoped = (
+        "scoped_decision" in sections_by_type
+        or "scoped_thread" in sections_by_type
+    )
+    if has_scoped:
+        parts.append("## Scoped Context")
         parts.append("")
-        for section in sections_by_type["scoped_decision"]:
-            parts.append(section.content)
-            parts.append("")
-
-    # Scoped threads
-    if "scoped_thread" in sections_by_type:
-        parts.append("## Scoped Threads")
+        parts.append(
+            "Decisions and continuity threads directly relevant to this chunk."
+        )
         parts.append("")
-        for section in sections_by_type["scoped_thread"]:
-            parts.append(section.content)
-            parts.append("")
 
-    # Adjacent summaries
+        if "scoped_decision" in sections_by_type:
+            parts.append("### Decisions")
+            parts.append("")
+            for section in sections_by_type["scoped_decision"]:
+                parts.append(section.content)
+                parts.append("")
+
+        if "scoped_thread" in sections_by_type:
+            parts.append("### Threads")
+            parts.append("")
+            for section in sections_by_type["scoped_thread"]:
+                parts.append(section.content)
+                parts.append("")
+
+    # --- Adjacent Chunks ---
     if "adjacent_summary" in sections_by_type:
-        parts.append("## Adjacent Summaries")
+        parts.append("## Adjacent Chunks")
+        parts.append("")
+        parts.append(
+            "Distillate summaries of predecessor and successor chunks "
+            "for narrative continuity."
+        )
         parts.append("")
         for section in sections_by_type["adjacent_summary"]:
             parts.append(section.content)
             parts.append("")
 
-    # Global decisions
-    if "global_decision" in sections_by_type:
-        parts.append("## Global Decisions")
+    # --- Global Context ---
+    has_global = (
+        "global_decision" in sections_by_type
+        or "global_thread" in sections_by_type
+    )
+    if has_global:
+        parts.append("## Global Context")
         parts.append("")
-        for section in sections_by_type["global_decision"]:
-            parts.append(section.content)
-            parts.append("")
-
-    # Global threads
-    if "global_thread" in sections_by_type:
-        parts.append("## Global Threads")
+        parts.append(
+            "Project-wide decisions and threads that apply across all chunks."
+        )
         parts.append("")
-        for section in sections_by_type["global_thread"]:
-            parts.append(section.content)
-            parts.append("")
 
-    # Unresolved questions
+        if "global_decision" in sections_by_type:
+            parts.append("### Decisions")
+            parts.append("")
+            for section in sections_by_type["global_decision"]:
+                parts.append(section.content)
+                parts.append("")
+
+        if "global_thread" in sections_by_type:
+            parts.append("### Threads")
+            parts.append("")
+            for section in sections_by_type["global_thread"]:
+                parts.append(section.content)
+                parts.append("")
+
+    # --- Open Questions ---
     if "unresolved_question" in sections_by_type:
-        parts.append("## Unresolved Questions")
+        parts.append("## Open Questions")
+        parts.append("")
+        parts.append(
+            "Unresolved questions that may be relevant to the writing task."
+        )
         parts.append("")
         for section in sections_by_type["unresolved_question"]:
             parts.append(section.content)
             parts.append("")
 
-    # Footer with dropped sections info
+    # --- Footer ---
     if context.dropped_sections:
         parts.append("---")
         parts.append("")
@@ -594,12 +655,11 @@ def generate_brief(
     # 6. Write brief file (unless dry-run)
     # ---------------------------------------------------------------
     layout = state.layout
-    brief_dir = layout.aip_loom_dir / "briefs"
-    brief_path = brief_dir / f"{chunk_id}.md"
+    brief_path = layout.brief_path(chunk_id)
 
     if not dry_run:
         try:
-            ensure_directory(brief_dir)
+            ensure_directory(layout.briefs_dir)
             safe_write_text(brief_path, content, layout)
         except Exception as exc:
             errors.append(
@@ -635,6 +695,11 @@ def generate_brief(
     )
 
     data = brief_result.to_dict()
+    # Include content for programmatic access (e.g. determinism tests,
+    # dry-run previews).  The content is also written to disk if not
+    # dry-run, so including it here is not redundant — callers need it
+    # without reading the file.
+    data["content"] = content
     # Also include context selection details for --json
     data["selected_context"] = context.to_dict()
 

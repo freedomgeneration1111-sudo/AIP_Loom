@@ -112,6 +112,9 @@ class TestPathResolution:
     def test_staging_dir(self, layout: ProjectLayout) -> None:
         assert layout.staging_dir == layout.root / ".aip-loom" / "staging"
 
+    def test_briefs_dir(self, layout: ProjectLayout) -> None:
+        assert layout.briefs_dir == layout.root / ".aip-loom" / "briefs"
+
     def test_decisions_ledger_path(self, layout: ProjectLayout) -> None:
         assert layout.decisions_ledger_path == layout.root / "ledgers" / "decisions.yaml"
 
@@ -177,6 +180,28 @@ class TestArchiveChunkPath:
     def test_invalid_archive_chunk_id_rejected(self, layout: ProjectLayout) -> None:
         with pytest.raises(LayoutError) as exc_info:
             layout.archive_chunk_path("bad-id")
+        assert exc_info.value.loom_error.code == CHUNK_ID_INVALID
+
+
+# ===========================================================================
+# brief_path
+# ===========================================================================
+
+
+class TestBriefPath:
+    """brief_path validates IDs and resolves brief file paths."""
+
+    def test_valid_brief_path(self, layout: ProjectLayout) -> None:
+        path = layout.brief_path("C-0001")
+        assert path == layout.briefs_dir / "C-0001.md"
+
+    def test_valid_brief_path_longer_prefix(self, layout: ProjectLayout) -> None:
+        path = layout.brief_path("CH-0012")
+        assert path == layout.briefs_dir / "CH-0012.md"
+
+    def test_invalid_brief_path_rejected(self, layout: ProjectLayout) -> None:
+        with pytest.raises(LayoutError) as exc_info:
+            layout.brief_path("../../../etc/passwd")
         assert exc_info.value.loom_error.code == CHUNK_ID_INVALID
 
 

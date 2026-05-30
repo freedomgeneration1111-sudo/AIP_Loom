@@ -283,7 +283,8 @@ def _format_decision(entry: DecisionEntry) -> str:
         lines.append(f"  Rationale: {entry.rationale}")
     if entry.chunk_id:
         lines.append(f"  Scoped to: {entry.chunk_id}")
-    lines.append(f"  Review: {entry.review_state.value}")
+    if entry.review_state != ReviewState.APPROVED:
+        lines.append(f"  Review: {entry.review_state.value}")
     return "\n".join(lines)
 
 
@@ -297,7 +298,8 @@ def _format_thread(entry: ThreadEntry) -> str:
         lines.append(f"  Scoped to: {entry.chunk_id}")
     if entry.blocked_by:
         lines.append(f"  Blocked by: {', '.join(entry.blocked_by)}")
-    lines.append(f"  Review: {entry.review_state.value}")
+    if entry.review_state != ReviewState.APPROVED:
+        lines.append(f"  Review: {entry.review_state.value}")
     return "\n".join(lines)
 
 
@@ -331,7 +333,7 @@ def _format_chunk_frontmatter(chunk: ChunkData) -> str:
     fm = chunk.frontmatter
     lines = [
         f"Chunk {fm.id}: {fm.title}",
-        f"  Status: {fm.status}",
+        f"  Status: {fm.status.value}",
         f"  Word count: {fm.word_count}",
         f"  Created: {fm.created_at}",
         f"  Updated: {fm.updated_at}",
