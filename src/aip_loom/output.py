@@ -67,6 +67,11 @@ def _render_rich(result: CommandResult) -> None:
         _render_inspect_dashboard(result)
         return
 
+    # -- brief command gets a dedicated brief renderer -----------------------
+    if result.command == "brief" and result.data and "chunk_id" in result.data:
+        _render_brief_dashboard(result)
+        return
+
     # -- summary line -------------------------------------------------------
     if result.ok:
         console.print(
@@ -122,19 +127,7 @@ def _render_rich(result: CommandResult) -> None:
 
 
 def _render_status_dashboard(result: CommandResult) -> None:
-    """Render a status command result as a Rich dashboard.
-
-    This produces a more readable, dashboard-style layout instead of the
-    generic key-value table.  It shows:
-    - Health badge (green/yellow/red)
-    - Project info
-    - Chunk progress
-    - Ledger counts and pending reviews
-    - Git state
-    - Lock state
-    - Recovery/recommendation items
-    - Warnings and errors (if any)
-    """
+    """Render a status command result as a Rich dashboard."""
     data = result.data
 
     # -- Health badge --------------------------------------------------------
@@ -204,7 +197,6 @@ def _render_status_dashboard(result: CommandResult) -> None:
             str(ledgers.get("questions_total", 0)),
             str(ledgers.get("questions_pending", 0)),
         )
-        # Extra row for thread state
         open_threads = ledgers.get("threads_open", 0)
         blocked_threads = ledgers.get("threads_blocked", 0)
         if open_threads > 0 or blocked_threads > 0:
@@ -213,11 +205,7 @@ def _render_status_dashboard(result: CommandResult) -> None:
                 state_parts.append(f"open: {open_threads}")
             if blocked_threads > 0:
                 state_parts.append(f"blocked: {blocked_threads}")
-            ledger_table.add_row(
-                "Thread states",
-                ", ".join(state_parts),
-                "",
-            )
+            ledger_table.add_row("Thread states", ", ".join(state_parts), "")
         console.print(ledger_table)
 
     # -- Git -----------------------------------------------------------------
@@ -251,7 +239,7 @@ def _render_status_dashboard(result: CommandResult) -> None:
         if lock.get("locked"):
             lock_table.add_row("Status", "[yellow]locked[/]")
             if lock.get("is_stale"):
-                lock_table.add_row("Stale", "[red]yes — PID is dead[/]")
+                lock_table.add_row("Stale", "[red]yes -- PID is dead[/]")
             if lock.get("pid"):
                 lock_table.add_row("PID", str(lock.get("pid", "")))
             if lock.get("command"):
@@ -262,7 +250,7 @@ def _render_status_dashboard(result: CommandResult) -> None:
 
     # -- Recovery indicator ---------------------------------------------------
     if data.get("recovery_file_exists"):
-        console.print("[bold red]RECOVERY.md exists[/] — a previous reconcile may have failed.")
+        console.print("[bold red]RECOVERY.md exists[/] -- a previous reconcile may have failed.")
 
     # -- Next actions --------------------------------------------------------
     actions = data.get("next_actions", [])
@@ -274,23 +262,8 @@ def _render_status_dashboard(result: CommandResult) -> None:
             action_table.add_row(str(i), action)
         console.print(action_table)
 
-    # -- Warnings ------------------------------------------------------------
-    if result.warnings:
-        table = Table(title="Warnings", show_header=True, header_style="bold yellow")
-        table.add_column("Code", style="yellow")
-        table.add_column("Message")
-        for w in result.warnings:
-            table.add_row(w.code, w.message)
-        console.print(table)
-
-    # -- Errors --------------------------------------------------------------
-    if result.errors:
-        table = Table(title="Errors", show_header=True, header_style="bold red")
-        table.add_column("Code", style="red")
-        table.add_column("Message")
-        for e in result.errors:
-            table.add_row(e.code, e.message)
-        console.print(table)
+    # -- Warnings / Errors ---------------------------------------------------
+    _render_warnings_errors(result)
 
 
 # ---------------------------------------------------------------------------
@@ -299,18 +272,7 @@ def _render_status_dashboard(result: CommandResult) -> None:
 
 
 def _render_inspect_dashboard(result: CommandResult) -> None:
-    """Render an inspect command result as a Rich context dashboard.
-
-    This shows:
-    - Target chunk info
-    - Token estimate and budget
-    - Selected sections (what brief would include)
-    - Dropped sections (what brief would omit due to budget)
-    - Scoped decisions and threads
-    - Distillate node info
-    - Adjacent summaries
-    - Warnings and errors
-    """
+    """Render an inspect command result as a Rich context dashboard."""
     data = result.data
 
     # -- Header ---------------------------------------------------------------
@@ -334,14 +296,7 @@ def _render_inspect_dashboard(result: CommandResult) -> None:
     )
 
     if not chunk_found:
-        # Nothing more to show
-        if result.errors:
-            table = Table(title="Errors", show_header=True, header_style="bold red")
-            table.add_column("Code", style="red")
-            table.add_column("Message")
-            for e in result.errors:
-                table.add_row(e.code, e.message)
-            console.print(table)
+        _render_warnings_errors(result)
         return
 
     # -- Token budget ---------------------------------------------------------
@@ -420,26 +375,11 @@ def _render_inspect_dashboard(result: CommandResult) -> None:
     ledger_table = Table(title="Ledger References", show_header=True, header_style="bold")
     ledger_table.add_column("Category")
     ledger_table.add_column("IDs")
-    ledger_table.add_row(
-        "Scoped decisions",
-        ", ".join(scoped_dec) if scoped_dec else "(none)",
-    )
-    ledger_table.add_row(
-        "Scoped threads",
-        ", ".join(scoped_threads) if scoped_threads else "(none)",
-    )
-    ledger_table.add_row(
-        "Global decisions",
-        ", ".join(global_dec) if global_dec else "(none)",
-    )
-    ledger_table.add_row(
-        "Global threads",
-        ", ".join(global_threads) if global_threads else "(none)",
-    )
-    ledger_table.add_row(
-        "Unresolved questions",
-        ", ".join(unresolved_q) if unresolved_q else "(none)",
-    )
+    ledger_table.add_row("Scoped decisions", ", ".join(scoped_dec) if scoped_dec else "(none)")
+    ledger_table.add_row("Scoped threads", ", ".join(scoped_threads) if scoped_threads else "(none)")
+    ledger_table.add_row("Global decisions", ", ".join(global_dec) if global_dec else "(none)")
+    ledger_table.add_row("Global threads", ", ".join(global_threads) if global_threads else "(none)")
+    ledger_table.add_row("Unresolved questions", ", ".join(unresolved_q) if unresolved_q else "(none)")
     console.print(ledger_table)
 
     # -- Distillate node ------------------------------------------------------
@@ -472,7 +412,88 @@ def _render_inspect_dashboard(result: CommandResult) -> None:
             )
         console.print(adj_table)
 
-    # -- Warnings ------------------------------------------------------------
+    # -- Warnings / Errors ---------------------------------------------------
+    _render_warnings_errors(result)
+
+
+# ---------------------------------------------------------------------------
+# Brief dashboard renderer
+# ---------------------------------------------------------------------------
+
+
+def _render_brief_dashboard(result: CommandResult) -> None:
+    """Render a brief command result as a Rich dashboard.
+
+    This shows:
+    - Generation status (success/failure)
+    - Chunk ID and brief path
+    - Token estimate and budget
+    - Section count and dropped count
+    - Dry-run indicator
+    - Warnings (especially BRIEF_FORCE_USED)
+    - Errors
+    """
+    data = result.data
+
+    # -- Header ---------------------------------------------------------------
+    chunk_id = data.get("chunk_id", "???")
+    dry_run = data.get("dry_run", False)
+
+    if result.ok:
+        border_style = "green"
+        status_text = "[bold green]GENERATED[/]" if not dry_run else "[bold cyan]DRY-RUN[/]"
+    else:
+        border_style = "red"
+        status_text = "[bold red]FAILED[/]"
+
+    console.print()
+    console.print(
+        Panel(
+            f"{status_text}  {result.message}",
+            title=f"aip-loom brief {chunk_id}",
+            border_style=border_style,
+        )
+    )
+
+    # -- Brief info -----------------------------------------------------------
+    info_table = Table(title="Brief Info", show_header=False)
+    info_table.add_column("Field", style="bold")
+    info_table.add_column("Value")
+    info_table.add_row("Chunk ID", str(chunk_id))
+    info_table.add_row("Token estimate", str(data.get("token_estimate", 0)))
+    info_table.add_row("Token budget", str(data.get("token_budget", 0)))
+    info_table.add_row("Sections", str(data.get("section_count", 0)))
+    info_table.add_row("Dropped", str(data.get("dropped_count", 0)))
+    info_table.add_row("Dry-run", "yes" if dry_run else "no")
+
+    brief_path = data.get("brief_path")
+    if brief_path:
+        info_table.add_row("Brief file", str(brief_path))
+    else:
+        info_table.add_row("Brief file", "(not written -- dry-run)")
+
+    console.print(info_table)
+
+    # -- Content length -------------------------------------------------------
+    content_length = data.get("content_length", 0)
+    if content_length:
+        len_table = Table(title="Content", show_header=False)
+        len_table.add_column("Field", style="bold")
+        len_table.add_column("Value")
+        len_table.add_row("Characters", str(content_length))
+        console.print(len_table)
+
+    # -- Warnings / Errors ---------------------------------------------------
+    _render_warnings_errors(result)
+
+
+# ---------------------------------------------------------------------------
+# Shared warnings/errors renderer
+# ---------------------------------------------------------------------------
+
+
+def _render_warnings_errors(result: CommandResult) -> None:
+    """Render warnings and errors tables for any dashboard."""
     if result.warnings:
         table = Table(title="Warnings", show_header=True, header_style="bold yellow")
         table.add_column("Code", style="yellow")
@@ -481,7 +502,6 @@ def _render_inspect_dashboard(result: CommandResult) -> None:
             table.add_row(w.code, w.message)
         console.print(table)
 
-    # -- Errors --------------------------------------------------------------
     if result.errors:
         table = Table(title="Errors", show_header=True, header_style="bold red")
         table.add_column("Code", style="red")

@@ -440,13 +440,71 @@ elsewhere is a **spec violation**.
   Rich dashboard shows: token budget, selected sections, dropped sections,
   ledger references, distillate node, adjacent summaries, warnings/errors.
 
+## Brief Generation
+
+**Mandatory rule (Chunk 12):** Brief generation **must** go through
+`brief.py` only.  No other module may independently assemble or write
+brief files.  Brief generation **must** call `select_context()` from
+`brief_context.py` as the **only** source of context selection — no
+duplication of selection logic is permitted.
+
+- **Brief service: src/aip_loom/brief.py** *(implemented — Chunk 12)*
+  - This is the **single authority** for assembling and writing session
+    briefs.  It adds rendering and file-writing logic on top of the
+    shared context selection engine — it never duplicates selection logic.
+  - Provides: ``generate_brief(root, chunk_id, task, dry_run, force,
+    token_budget)`` → ``CommandResult``, ``assemble_brief_content(context,
+    task)`` → ``str``, ``BriefResult`` (frozen dataclass),
+    ``PROTECTED_PRIORITIES`` (frozenset).
+  - **Zero duplication**: ``generate_brief`` calls ``select_context()``
+    from ``brief_context.py`` as the single source of truth.  No other
+    function in this module independently decides what context to include.
+  - **Protected sections**: Sections with priorities in
+    ``PROTECTED_PRIORITIES`` ({0, 1, 2, 3, 4, 6}) are never dropped
+    from a brief.  If any protected section would be dropped due to
+    budget, or if the budget is exceeded by mandatory sections, the
+    brief fails with ``BRIEF_BUDGET_OVERFLOW`` rather than producing an
+    incomplete brief.  Only priorities 5 (adjacent summaries), 7
+    (global threads), and 8 (unresolved questions) can be dropped.
+  - **Dirty/orphan chunk guards**: Brief fails for chunks with dirty
+    checksums (``BRIEF_DIRTY_CHUNK``) or chunks not in the manifest
+    order (``BRIEF_STALE_CHUNK``) unless ``--force`` is used.
+  - **Force with unmistakable warning**: ``--force`` allows brief
+    generation on dirty/stale/orphan chunks, but always emits a
+    ``BRIEF_FORCE_USED`` warning containing ``FORCE OVERRIDE`` in
+    the message.
+  - **Dry-run safety**: When ``dry_run=True``, **nothing** is written
+    to disk.  The brief content is assembled and returned but the file
+    write step is skipped entirely.
+  - **Deterministic**: Given the same project state, chunk ID, task,
+    and token budget, the brief content is always identical.
+  - **Human-readable output**: The brief is a well-structured Markdown
+    file with YAML frontmatter containing metadata (chunk_id,
+    generated_at, token_estimate, token_budget, schema_version,
+    section_count, dropped_count, task).
+  - **Brief file location**: ``.aip-loom/briefs/<chunk_id>.md`` — written
+    using ``safe_write_text()`` from ``fs.py`` for atomic writes.
+  - **Token consistency**: Token estimates in the brief match exactly
+    what ``inspect`` would show for the same chunk and budget, because
+    both commands use the same ``select_context()`` engine.
+  - **to_dict()**: ``BriefResult.to_dict()`` produces a JSON-serialisable
+    dictionary including chunk_id, brief_path, token_estimate,
+    token_budget, section_count, dropped_count, dry_run, and content_length.
+  - **CLI integration**: The ``brief`` CLI command delegates to
+    ``generate_brief()`` via ``_run_brief()``.  Supports ``--task``,
+    ``--dry-run``, ``--force``, and ``--json`` flags.
+  - Error codes used: ``CHUNK_NOT_FOUND``, ``BRIEF_BUDGET_OVERFLOW``,
+    ``BRIEF_DIRTY_CHUNK``, ``BRIEF_STALE_CHUNK``, ``FILE_WRITE_ERROR``.
+  - Warning codes used: ``BRIEF_FORCE_USED``, plus all warnings from
+    ``SelectedContext`` and ``ProjectState``.
+
 ## Reconcile
 - Update parser: src/aip_loom/update_parser.py *(not yet implemented — Chunk 13)*
 - Reconcile planner: src/aip_loom/reconcile_plan.py *(not yet implemented — Chunk 14)*
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11, brief wired in Chunk 12)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
 
 ## Project Initialisation

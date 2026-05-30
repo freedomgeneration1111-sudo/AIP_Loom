@@ -17,7 +17,8 @@ import typer
 from pathlib import Path
 
 from . import __version__
-from .brief_context import select_context
+from .brief import generate_brief
+from .brief_context import DEFAULT_TOKEN_BUDGET, select_context
 from .errors import (
     CHUNK_NOT_FOUND,
     NOT_IMPLEMENTED,
@@ -249,16 +250,26 @@ def _run_validate(chunk: str | None) -> CommandResult:
         )
 
 
-def _stub_brief(
+def _run_brief(
     chunk: str,
+    task: str,
     dry_run: bool,
     force: bool,
 ) -> CommandResult:
-    """Placeholder: will be implemented in Chunk 12."""
-    return CommandResult.failure(
-        command="brief",
-        code=NOT_IMPLEMENTED,
-        message=f"The 'brief' command is not yet implemented. (chunk={chunk!r})",
+    """Real brief service — delegates to :func:`generate_brief`.
+
+    This function calls the shared context selection engine
+    (:func:`select_context`) via :func:`generate_brief` — it never
+    duplicates selection logic.
+    """
+    root = Path.cwd()
+    return generate_brief(
+        root=root,
+        chunk_id=chunk,
+        task=task,
+        dry_run=dry_run,
+        force=force,
+        token_budget=DEFAULT_TOKEN_BUDGET,
     )
 
 
@@ -382,12 +393,13 @@ def validate(
 @app.command()
 def brief(
     chunk: str = typer.Argument(..., help="Target chunk ID."),
+    task: str = typer.Option("", "--task", "-t", help="Task description to include in the brief."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview brief without writing."),
     force: bool = typer.Option(False, "--force", help="Force brief generation for dirty/stale chunks."),
     json_output: bool = JsonFlag,
 ) -> None:
     """Generate a deterministic session brief for a chunk."""
-    result = _stub_brief(chunk=chunk, dry_run=dry_run, force=force)
+    result = _run_brief(chunk=chunk, task=task, dry_run=dry_run, force=force)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)
 

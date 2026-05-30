@@ -313,15 +313,21 @@ class TestValidateCommand:
             assert data["data"].get("chunk_scope") == "C-0001"
 
 
-class TestPlaceholderBrief:
-    def test_brief_exits_nonzero(self, runner: CliRunner) -> None:
+class TestBriefCLI:
+    """Brief is now a real command (Chunk 12).  These tests verify it
+    works correctly from the CLI layer when no project is present.
+    """
+
+    def test_brief_exits_nonzero_without_project(self, runner: CliRunner) -> None:
+        """Brief on a non-project directory exits nonzero."""
         result = runner.invoke(app, ["brief", "C-0001"])
         assert result.exit_code != 0
 
-    def test_brief_json_has_not_implemented(self, runner: CliRunner) -> None:
+    def test_brief_json_without_project(self, runner: CliRunner) -> None:
+        """Brief --json on a non-project directory returns failure."""
         result = runner.invoke(app, ["brief", "C-0001", "--json"])
         data = _parse_json_output(result.output)
-        assert data["code"] == NOT_IMPLEMENTED
+        assert data["ok"] is False
         assert data["command"] == "brief"
 
 
