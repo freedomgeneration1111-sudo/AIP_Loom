@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aip-loom"
+version = "0.1.0"
+description = "Local-first Python CLI workbench for longform AI document continuity"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["cli", "ai", "document", "continuity", "writing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "ruamel.yaml>=0.18.0",
+]
+
+[project.optional-dependencies]
+tokens = [
+    "tiktoken>=0.7.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+aip-loom = "aip_loom.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aip_loom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --tb=short"
