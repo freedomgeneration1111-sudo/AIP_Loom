@@ -824,6 +824,7 @@ def parse_model_output(text: str) -> CommandResult:
         ),
         data={
             "parsed": parsed.to_dict(),
+            "_parsed_block": parsed,
             "target_chunk": update_block.target_chunk,
             "mode": update_block.mode.value,
             "revised_prose_length": len(revised_prose),

@@ -21,9 +21,12 @@ from .brief import generate_brief
 from .brief_context import DEFAULT_TOKEN_BUDGET, select_context
 from .errors import (
     CHUNK_NOT_FOUND,
+    FILE_NOT_FOUND,
+    FILE_READ_ERROR,
     NOT_IMPLEMENTED,
     PROJECT_MALFORMED,
     PROJECT_NOT_FOUND,
+    RECONCILE_PRE_VALIDATION_FAILED,
     RECOVERY_FILE_EXISTS,
     STALE_LOCK_DETECTED,
     LoomError,
@@ -32,8 +35,10 @@ from .errors import (
 from .init import InitError, init_project
 from .output import render_result
 from .project import ProjectError, ValidationResult, load_project, validate_project
+from .reconcile_plan import ReconcilePlan, build_reconcile_plan
 from .results import CommandResult
 from .status import HealthLevel, StatusReport, compute_status
+from .update_parser import parse_model_output
 
 # ---------------------------------------------------------------------------
 # Typer application
@@ -338,17 +343,136 @@ def _run_inspect(chunk: str) -> CommandResult:
     )
 
 
-def _stub_reconcile(
+def _run_reconcile(
     chunk: str,
     output_path: str | None,
     preview: bool,
 ) -> CommandResult:
-    """Placeholder: will be implemented in Chunks 14/15."""
-    return CommandResult.failure(
-        command="reconcile",
-        code=NOT_IMPLEMENTED,
-        message=f"The 'reconcile' command is not yet implemented. (chunk={chunk!r})",
-    )
+    """Reconcile service — delegates to build_reconcile_plan.
+
+    For ``--preview`` mode, the plan is built and displayed but no
+    canonical files are written.  This is the "dry run" path.
+
+    For non-preview mode (Chunk 15), the plan will be applied to
+    canonical state.  Currently returns NOT_IMPLEMENTED for apply.
+    """
+    root = Path.cwd()
+
+    # 1. Load project state
+    try:
+        state = load_project(root)
+    except ProjectError as exc:
+        return CommandResult.failure(
+            command="reconcile",
+            code=exc.loom_error.code,
+            message=exc.loom_error.message,
+            errors=[exc.loom_error],
+        )
+
+    # 2. Read model output file
+    if output_path is None:
+        return CommandResult.failure(
+            command="reconcile",
+            code=FILE_NOT_FOUND,
+            message=(
+                "No model output file specified.  Use --output to "
+                "provide the path to the file containing model output."
+            ),
+        )
+
+    model_output_path = Path(output_path).resolve()
+    if not model_output_path.is_file():
+        return CommandResult.failure(
+            command="reconcile",
+            code=FILE_NOT_FOUND,
+            message=f"Model output file not found: {model_output_path}",
+            detail={"path": str(model_output_path)},
+        )
+
+    try:
+        model_output_text = model_output_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return CommandResult.failure(
+            command="reconcile",
+            code=FILE_READ_ERROR,
+            message=f"Cannot read model output file: {exc}",
+            detail={"path": str(model_output_path), "error": str(exc)},
+        )
+
+    # 3. Parse model output using the strict update parser
+    parse_result = parse_model_output(model_output_text)
+    if not parse_result.ok:
+        # Parser failed — surface the error
+        return CommandResult.failure(
+            command="reconcile",
+            code=parse_result.code,
+            message=f"Model output parse failed: {parse_result.message}",
+            errors=parse_result.errors,
+            data=parse_result.data,
+            warnings=parse_result.warnings,
+        )
+
+    # 4. Extract the ParsedUpdateBlock object
+    parsed_block_obj = parse_result.data.get("_parsed_block")
+    if parsed_block_obj is None:
+        return CommandResult.failure(
+            command="reconcile",
+            code=RECONCILE_PRE_VALIDATION_FAILED,
+            message="Parser succeeded but no parsed block object in result data",
+        )
+
+    # 5. Build the reconcile plan
+    plan = build_reconcile_plan(parsed_block_obj, state)
+
+    # 6. Handle preview mode vs apply mode
+    if preview:
+        # Preview mode: return the plan without any canonical writes
+        plan_data = plan.to_dict()
+        plan_data["model_output_file"] = str(model_output_path)
+        plan_data["preview"] = True
+
+        all_warnings = list(plan.warnings)
+        all_warnings.extend(state.load_warnings)
+
+        if plan.plan_ok:
+            message = (
+                f"Reconcile plan for chunk {plan.target_chunk}: "
+                f"{len(plan.ledger_changes)} ledger change(s), "
+                f"{len(plan.file_changes)} file(s) affected"
+            )
+            if plan.conflicts:
+                message += f", {len(plan.conflicts)} conflict(s)"
+            return CommandResult.success(
+                command="reconcile",
+                message=message,
+                data=plan_data,
+                warnings=all_warnings,
+            )
+        else:
+            # Plan has conflicts — still return data for inspection
+            # but mark as failure
+            conflict_codes = [c.code for c in plan.conflicts]
+            return CommandResult.failure(
+                command="reconcile",
+                code=conflict_codes[0] if conflict_codes else RECONCILE_PRE_VALIDATION_FAILED,
+                message=(
+                    f"Reconcile plan has {len(plan.conflicts)} conflict(s) "
+                    f"for chunk {plan.target_chunk}"
+                ),
+                errors=list(plan.conflicts),
+                data=plan_data,
+                warnings=all_warnings,
+            )
+    else:
+        # Apply mode — not yet implemented (Chunk 15)
+        return CommandResult.failure(
+            command="reconcile",
+            code=NOT_IMPLEMENTED,
+            message=(
+                "Reconcile apply is not yet implemented.  "
+                "Use --preview to see the planned changes."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +547,6 @@ def reconcile(
     json_output: bool = JsonFlag,
 ) -> None:
     """Reconcile model output with project state."""
-    result = _stub_reconcile(chunk=chunk, output_path=output, preview=preview)
+    result = _run_reconcile(chunk=chunk, output_path=output, preview=preview)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)

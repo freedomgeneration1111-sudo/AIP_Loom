@@ -629,11 +629,74 @@ in the codebase is a **spec violation**.
     ``YAML_DUPLICATE_KEYS``, ``YAML_TAGS_REJECTED``,
     ``SCHEMA_VALIDATION_FAILED``, ``YAML_PARSE_ERROR``.
 
-- Reconcile planner: src/aip_loom/reconcile_plan.py *(not yet implemented — Chunk 14)*
+- **Reconcile planner: src/aip_loom/reconcile_plan.py** *(implemented — Chunk 14)*
+  - This is the **single authority** for planning reconcile operations.
+    No other module may independently decide what changes to apply from
+    model output.  The planner consumes the validated ``ParsedUpdateBlock``
+    from ``update_parser.py`` and the loaded ``ProjectState`` from
+    ``project.py``, and produces a ``ReconcilePlan`` that is the **sole
+    input** to the apply step (Chunk 15).
+  - **Shared-plan rule (CRITICAL)**: Chunk 15 (apply) **must** consume the
+    ``ReconcilePlan`` shape directly.  It must **not** re-parse model output,
+    re-resolve provisional IDs, re-validate references, or rebuild the plan
+    in any way.  The plan is the contract; apply only executes it.
+  - Provides: ``build_reconcile_plan(parsed_block, project_state)`` →
+    ``ReconcilePlan``, ``ReconcilePlan`` (frozen dataclass),
+    ``PlannedLedgerChange`` (frozen), ``PlannedFileChange`` (frozen),
+    ``ProvisionalIdMapping`` (frozen).
+  - **ReconcilePlan shape** (the contract for Chunk 15):
+    - ``target_chunk: str`` — chunk ID to update
+    - ``mode: str`` — update mode (``"full_replacement"``)
+    - ``revised_prose: str`` — new prose body
+    - ``ledger_changes: tuple[PlannedLedgerChange, ...]`` — all ledger mods
+    - ``id_mappings: tuple[ProvisionalIdMapping, ...]`` — provisional→canonical
+    - ``file_changes: tuple[PlannedFileChange, ...]`` — files to modify
+    - ``conflicts: tuple[LoomError, ...]`` — semantic conflicts
+    - ``warnings: tuple[LoomWarning, ...]`` — non-fatal issues
+    - ``requires_human_review: bool`` — any item needs review
+    - ``plan_ok: bool`` — ``True`` if no conflicts
+  - **Zero canonical writes during preview**: The planner is pure — it
+    never writes to canonical files, transaction workspaces, or any
+    persistent storage.  Preview is idempotent and safe to run repeatedly.
+  - **Semantic validations** (require project context):
+    - Target chunk not found → ``CHUNK_NOT_FOUND`` conflict
+    - Close non-existent thread → ``VALIDATION_BROKEN_REFERENCE`` conflict
+    - Close already-closed thread → ``VALIDATION_BROKEN_REFERENCE`` conflict
+    - Update non-existent entry → ``VALIDATION_BROKEN_REFERENCE`` conflict
+    - Close + update same thread → ``RECONCILE_PRE_VALIDATION_FAILED`` conflict
+    - Model-assigned canonical IDs → ``MODEL_ASSIGNED_ID`` conflict (defense-in-depth)
+  - **Auto-approval detection**: Warns when block-level
+    ``requires_human_review=False`` but individual items have
+    ``requires_human_review=True`` → ``AUTO_APPROVAL_BLOCKED`` warning.
+  - **Provisional ID resolution**: Maps ``new-1`` → ``D-0005`` using
+    existing ledger state.  Deterministic given same state and input.
+    Sequential allocation (no gap-filling).
+  - **File change planning**: Determines which canonical files will be
+    modified (chunk file, decisions ledger, threads ledger, questions ledger).
+  - **CLI integration**: ``aip-loom reconcile <chunk> --output <file>
+    --preview`` reads model output, parses via ``update_parser``, builds
+    plan, and returns it as JSON or Rich output.  Apply mode (without
+    ``--preview``) returns ``NOT_IMPLEMENTED`` pending Chunk 15.
+  - **Frozen result**: All result types (``ReconcilePlan``,
+    ``PlannedLedgerChange``, ``PlannedFileChange``,
+    ``ProvisionalIdMapping``) are frozen dataclasses.
+  - **Serializable**: ``ReconcilePlan.to_dict()`` produces a complete
+    JSON-serializable dictionary.  This is the canonical wire format
+    between preview and apply.
+  - Error codes used: ``CHUNK_NOT_FOUND``, ``VALIDATION_BROKEN_REFERENCE``,
+    ``RECONCILE_PRE_VALIDATION_FAILED``, ``MODEL_ASSIGNED_ID``,
+    ``AUTO_APPROVAL_BLOCKED`` (warning), ``FILE_NOT_FOUND``,
+    ``FILE_READ_ERROR``, ``NOT_IMPLEMENTED`` (apply stub).
+  - **update_parser.py bridge**: The parser now stores the
+    ``ParsedUpdateBlock`` object in ``data["_parsed_block"]`` (stripped
+    during JSON serialization via ``CommandResult._sanitize_data``) so
+    the CLI can pass it directly to ``build_reconcile_plan`` without
+    re-parsing.
+
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11, brief wired in Chunk 12)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11, brief wired in Chunk 12, reconcile --preview wired in Chunk 14)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
 
 ## Project Initialisation

@@ -104,6 +104,17 @@ class CommandResult:
 
     # -- serialization ------------------------------------------------------
 
+    @staticmethod
+    def _sanitize_data(data: dict[str, Any]) -> dict[str, Any]:
+        """Strip internal (non-serializable) keys from data.
+
+        Keys prefixed with ``_`` are considered internal references
+        (e.g. ``_parsed_block``) that should not appear in serialized
+        output.  They hold live Python objects for downstream code to
+        use directly, but are not JSON-serializable.
+        """
+        return {k: v for k, v in data.items() if not k.startswith("_")}
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable dictionary of the envelope."""
         return {
@@ -111,7 +122,7 @@ class CommandResult:
             "command": self.command,
             "code": self.code,
             "message": self.message,
-            "data": self.data,
+            "data": self._sanitize_data(self.data),
             "warnings": [
                 {"code": w.code, "message": w.message, "detail": w.detail}
                 for w in self.warnings

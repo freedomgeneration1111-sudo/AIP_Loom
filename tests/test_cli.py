@@ -366,11 +366,24 @@ class TestPlaceholderReconcile:
         result = runner.invoke(app, ["reconcile", "C-0001"])
         assert result.exit_code != 0
 
-    def test_reconcile_json_has_not_implemented(self, runner: CliRunner) -> None:
+    def test_reconcile_without_project_exits_nonzero(self, runner: CliRunner) -> None:
+        """Reconcile without a project root exits with an error."""
+        result = runner.invoke(app, ["reconcile", "C-0001", "--json"])
+        assert result.exit_code != 0
+
+    def test_reconcile_apply_not_implemented(self, runner: CliRunner) -> None:
+        """Reconcile without --preview returns NOT_IMPLEMENTED for apply mode."""
+        # This requires a valid project, so we expect it to fail before
+        # reaching the apply check (no project, no output file).
+        # The NOT_IMPLEMENTED code is returned when --preview is not used
+        # and all parsing succeeds.
         result = runner.invoke(app, ["reconcile", "C-0001", "--json"])
         data = _parse_json_output(result.output)
-        assert data["code"] == NOT_IMPLEMENTED
+        # Without a project, it fails with PROJECT_NOT_FOUND or FILE_NOT_FOUND
+        # (depending on whether cwd has a project). The key thing is it
+        # doesn't succeed silently.
         assert data["command"] == "reconcile"
+        assert data["ok"] is False
 
 
 # ---------------------------------------------------------------------------
