@@ -111,3 +111,51 @@ Stage Summary:
 - New: tests/test_brief_context.py (40 tests)
 - New: tests/test_inspect.py (26 tests)
 - Key design: select_context() is the shared engine that both inspect and brief will use
+
+---
+Task ID: chunk-12-stabilization
+Agent: main
+Task: Chunk 12 stabilization remediation pass — fix enum rendering, improve brief quality, add determinism tests, add layout paths
+
+Work Log:
+- Read all Chunk 12 files (brief.py, brief_context.py, tokens.py, cli.py, layout.py, tests, Pattern Registry)
+- Ran existing 738 tests — all passed
+- Generated real brief from initialized project to evaluate output quality
+- Identified critical bug: fm.status renders as ChunkStatus.DRAFT instead of draft
+- Identified noise: "Review: approved" shown for every decision/thread
+- Identified frontmatter quality: Python repr quoting instead of standard YAML
+- Fixed _format_chunk_frontmatter() in brief_context.py: fm.status -> fm.status.value
+- Fixed _format_decision() and _format_thread() in brief_context.py: hide approved review state
+- Rewrote assemble_brief_content() in brief.py with major quality improvements:
+  - Standard YAML quoting via _yaml_quote() helper
+  - Title includes chunk title (C-0001 — Chapter 1: The Letter)
+  - Renamed "Target Chunk" → "Current Chunk"
+  - Renamed "Scoped Decisions/Threads" → "Scoped Context" with subsections
+  - Renamed "Global Decisions/Threads" → "Global Context" with subsections
+  - Renamed "Unresolved Questions" → "Open Questions"
+  - Added section descriptions for writer orientation
+- Added briefs_dir property and brief_path() method to ProjectLayout
+- Updated brief.py to use layout.brief_path() for single-authority path resolution
+- Added content field to CommandResult.data for programmatic access
+- Removed unused field import from brief.py
+- Removed unused BriefResult import from test_brief.py
+- Updated existing tests to match new section names
+- Added 14 new tests:
+  - TestStrongDeterminism (4 tests): content string equality proof
+  - TestBriefOutputQuality (8 tests): enum rendering, YAML quoting, noise reduction, headings
+  - TestBudgetOverflow: mandatory-only overflow, no-file-written
+  - TestBriefPath: layout path resolution tests
+- Updated Pattern Registry with stabilization notes for brief.py, brief_context.py, layout.py
+- Documented template support deferral in Pattern Registry
+- All 756 tests pass
+- Committed and pushed to origin/main
+
+Stage Summary:
+- Critical enum rendering bug fixed (ChunkStatus.DRAFT -> draft)
+- Brief output quality significantly improved for LLM consumption
+- Strong determinism proof added (content string equality, not just metadata)
+- Mandatory-only budget overflow test proves BRIEF_BUDGET_OVERFLOW fires correctly
+- ProjectLayout now owns brief path resolution (briefs_dir, brief_path())
+- Template support explicitly deferred with documented rationale
+- CLI bloat evaluated — no refactoring needed
+- 756 tests pass, 0 failures
