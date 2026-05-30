@@ -73,3 +73,41 @@ Stage Summary:
 - New: tests/test_status.py (69 tests)
 - Modified: .agent/PATTERN_REGISTRY.md (Status section added)
 - Commit: f629bab, pushed to origin/main
+
+---
+Task ID: 11
+Agent: Super Z (main)
+Task: Implement Chunk 11 — `aip-loom inspect` command with shared brief context engine
+
+Work Log:
+- Pulled latest repo, verified all 609 existing tests pass
+- Performed Before-Code Ritual: identified files to touch, existing modules to reuse, anti-patterns (duplicating context selection, writing files from inspect, inconsistent token estimation)
+- Designed shared brief context engine architecture: select_context() as single authority for both inspect and brief
+- Implemented src/aip_loom/tokens.py — Token estimation utility with tiktoken support and heuristic fallback
+- Implemented src/aip_loom/brief_context.py — Shared context selection engine with:
+  - select_context() function: single entry point for both inspect and brief
+  - ContextSection: frozen dataclass for a single context section with priority
+  - SelectedContext: frozen result with sections, dropped sections, token estimates, warnings
+  - Priority-based context selection: mandatory (0-1) → distillate (2) → scoped (3-4) → adjacent (5) → global (6-7) → questions (8)
+  - Token budget enforcement: drops low-priority sections when budget exceeded
+  - Honest warnings for missing/malformed ledgers (BRIEF_ORPHAN_CHUNK)
+  - Budget overflow warning (BRIEF_BUDGET_OVERFLOW)
+  - Pure computation — never writes to disk
+- Updated src/aip_loom/cli.py: replaced _stub_inspect with _run_inspect that uses select_context
+- Updated src/aip_loom/output.py: added _render_inspect_dashboard() for Rich terminal output
+- Updated test_cli.py: replaced TestPlaceholderInspect with real inspect CLI tests
+- Created tests/test_tokens.py: 15 tests for token estimation
+- Created tests/test_brief_context.py: 40 tests for shared context selection engine
+- Created tests/test_inspect.py: 26 tests for inspect CLI command
+- All 690 tests pass (609 original + 81 new), zero regressions
+
+Stage Summary:
+- New module: src/aip_loom/tokens.py (estimate_text_tokens, estimate_tokens, TokenEstimate)
+- New module: src/aip_loom/brief_context.py (select_context, SelectedContext, ContextSection)
+- Modified: src/aip_loom/cli.py (_run_inspect replacing _stub_inspect, CHUNK_NOT_FOUND import)
+- Modified: src/aip_loom/output.py (dedicated inspect dashboard renderer)
+- Modified: tests/test_cli.py (real inspect tests replacing placeholder)
+- New: tests/test_tokens.py (15 tests)
+- New: tests/test_brief_context.py (40 tests)
+- New: tests/test_inspect.py (26 tests)
+- Key design: select_context() is the shared engine that both inspect and brief will use
