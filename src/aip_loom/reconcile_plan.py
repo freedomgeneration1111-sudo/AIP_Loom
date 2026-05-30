@@ -44,8 +44,7 @@ Design principles (BuildSpec §14, §3A, and Chunk 14 description):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .errors import (
     AUTO_APPROVAL_BLOCKED,
@@ -57,7 +56,7 @@ from .errors import (
     LoomError,
     LoomWarning,
 )
-from .ids import allocate_next_id
+from .ids import allocate_next_id, extract_id_number, InvalidIdError
 from .project import ProjectState
 from .schemas import (
     UpdateBlock,
@@ -217,10 +216,13 @@ class ReconcilePlan:
 
         This is the canonical serialization format that the apply step
         (Chunk 15) will consume.  It must be stable and complete.
+        The revised prose text is included so that apply can write it
+        to the chunk file without re-parsing model output.
         """
         return {
             "target_chunk": self.target_chunk,
             "mode": self.mode,
+            "revised_prose": self.revised_prose,
             "revised_prose_length": len(self.revised_prose),
             "ledger_changes": [
                 {
@@ -368,6 +370,8 @@ def _validate_update_existing(
     - The referenced ID exists in the appropriate ledger
     - The update is not conflicting with a close operation on the
       same thread (close + update = conflict)
+    - If a ledger could not be loaded (None), updates to it are
+      rejected with a specific error message
     """
     errors: list[LoomError] = []
 
@@ -375,12 +379,15 @@ def _validate_update_existing(
     decision_ids: set[str] = set()
     thread_ids: set[str] = set()
     question_ids: set[str] = set()
+    decisions_ledger_loaded = state.decisions_ledger is not None
+    threads_ledger_loaded = state.threads_ledger is not None
+    questions_ledger_loaded = state.questions_ledger is not None
 
-    if state.decisions_ledger:
+    if decisions_ledger_loaded:
         decision_ids = {e.id for e in state.decisions_ledger.entries}
-    if state.threads_ledger:
+    if threads_ledger_loaded:
         thread_ids = {e.id for e in state.threads_ledger.entries}
-    if state.questions_ledger:
+    if questions_ledger_loaded:
         question_ids = {e.id for e in state.questions_ledger.entries}
 
     close_set = set(close_thread_ids)
@@ -389,7 +396,18 @@ def _validate_update_existing(
         eid = entry.id
         # Determine which ledger this ID belongs to
         if eid.startswith("D-"):
-            if eid not in decision_ids:
+            if not decisions_ledger_loaded:
+                errors.append(
+                    LoomError(
+                        code=VALIDATION_BROKEN_REFERENCE,
+                        message=(
+                            f"Cannot update decision {eid!r}: the decisions "
+                            f"ledger could not be loaded."
+                        ),
+                        detail={"id": eid, "ledger": "decisions", "reason": "ledger_unavailable"},
+                    )
+                )
+            elif eid not in decision_ids:
                 errors.append(
                     LoomError(
                         code=VALIDATION_BROKEN_REFERENCE,
@@ -401,7 +419,18 @@ def _validate_update_existing(
                     )
                 )
         elif eid.startswith("T-"):
-            if eid not in thread_ids:
+            if not threads_ledger_loaded:
+                errors.append(
+                    LoomError(
+                        code=VALIDATION_BROKEN_REFERENCE,
+                        message=(
+                            f"Cannot update thread {eid!r}: the threads "
+                            f"ledger could not be loaded."
+                        ),
+                        detail={"id": eid, "ledger": "threads", "reason": "ledger_unavailable"},
+                    )
+                )
+            elif eid not in thread_ids:
                 errors.append(
                     LoomError(
                         code=VALIDATION_BROKEN_REFERENCE,
@@ -428,7 +457,18 @@ def _validate_update_existing(
                     )
                 )
         elif eid.startswith("Q-"):
-            if eid not in question_ids:
+            if not questions_ledger_loaded:
+                errors.append(
+                    LoomError(
+                        code=VALIDATION_BROKEN_REFERENCE,
+                        message=(
+                            f"Cannot update question {eid!r}: the questions "
+                            f"ledger could not be loaded."
+                        ),
+                        detail={"id": eid, "ledger": "questions", "reason": "ledger_unavailable"},
+                    )
+                )
+            elif eid not in question_ids:
                 errors.append(
                     LoomError(
                         code=VALIDATION_BROKEN_REFERENCE,
@@ -508,12 +548,21 @@ def _resolve_provisional_ids(
 ) -> tuple[list[ProvisionalIdMapping], list[LoomError]]:
     """Resolve provisional IDs to canonical IDs.
 
-    Uses :func:`allocate_next_id` to determine the next available
-    canonical ID for each new item.  This resolution is deterministic
-    given the same project state and update block.
+    Uses :func:`allocate_next_id` (the single authority for ID
+    allocation) to determine the next available canonical ID for
+    each new item.  This resolution is deterministic given the same
+    project state and update block.
+
+    For multiple new items of the same type, we call
+    ``allocate_next_id`` once to get the first new ID, then
+    increment from there (since the newly-allocated IDs won't yet
+    be in the ledger entries).  This avoids duplicating the
+    allocation logic from ``ids.py``.
 
     Returns a list of mappings and a list of errors (e.g. if the
-    model somehow sneaked a canonical ID past the parser).
+    model somehow sneaked a canonical ID past the parser — this is
+    a secondary defense-in-depth guard, as the Pydantic schema
+    already rejects canonical IDs in provisional_id fields).
     """
     mappings: list[ProvisionalIdMapping] = []
     errors: list[LoomError] = []
@@ -522,115 +571,98 @@ def _resolve_provisional_ids(
     decision_entries = list(state.decisions_ledger.entries) if state.decisions_ledger else []
     thread_entries = list(state.threads_ledger.entries) if state.threads_ledger else []
 
-    # Track what IDs we've allocated in this batch to avoid
-    # duplicates when multiple new items are proposed
-    allocated_decision_ids: set[str] = set()
-    allocated_thread_ids: set[str] = set()
-
-    # Resolve new decisions
-    next_decision_num = 0
-    existing_decision_max = 0
-    for entry in decision_entries:
-        if entry.id.startswith("D-"):
-            try:
-                _, num = _extract_id_parts(entry.id)
-                if num > existing_decision_max:
-                    existing_decision_max = num
-            except ValueError:
-                pass
-
-    for i, item in enumerate(update_block.new_decisions):
-        # Defense-in-depth: check for model-assigned canonical IDs
-        if _LEDGER_ID_RE.match(item.provisional_id):
+    # Resolve new decisions — use the single authority allocate_next_id
+    if update_block.new_decisions:
+        try:
+            first_new_id = allocate_next_id("D", decision_entries)
+            _, first_num = extract_id_number(first_new_id)
+        except (InvalidIdError, ValueError) as exc:
+            # If ID allocation fails (e.g. malformed existing IDs),
+            # surface it as an error
             errors.append(
                 LoomError(
-                    code=MODEL_ASSIGNED_ID,
-                    message=(
-                        f"Model-proposed canonical ID {item.provisional_id!r} "
-                        f"in new_decisions.  IDs are allocated by AIP_Loom, "
-                        f"never by the model."
-                    ),
-                    detail={"provisional_id": item.provisional_id},
+                    code=FIELD_INVALID,
+                    message=f"Cannot allocate next decision ID: {exc}",
+                    detail={"prefix": "D", "error": str(exc)},
                 )
             )
-            continue
+            first_num = 0
 
-        next_num = existing_decision_max + i + 1
-        canonical_id = f"D-{next_num:04d}"
+        for i, item in enumerate(update_block.new_decisions):
+            # Defense-in-depth: check for model-assigned canonical IDs
+            # (the Pydantic schema already rejects these, but we guard here
+            # in case validation is somehow bypassed)
+            if _LEDGER_ID_RE.match(item.provisional_id):
+                errors.append(
+                    LoomError(
+                        code=MODEL_ASSIGNED_ID,
+                        message=(
+                            f"Model-proposed canonical ID {item.provisional_id!r} "
+                            f"in new_decisions.  IDs are allocated by AIP_Loom, "
+                            f"never by the model."
+                        ),
+                        detail={"provisional_id": item.provisional_id},
+                    )
+                )
+                continue
 
-        # Ensure no collision with already-allocated IDs in this batch
-        while canonical_id in allocated_decision_ids:
-            next_num += 1
-            canonical_id = f"D-{next_num:04d}"
+            canonical_id = f"D-{first_num + i:04d}"
 
-        allocated_decision_ids.add(canonical_id)
-
-        mappings.append(
-            ProvisionalIdMapping(
-                provisional_id=item.provisional_id,
-                canonical_id=canonical_id,
-                item_type="decision",
-                summary=item.summary,
+            mappings.append(
+                ProvisionalIdMapping(
+                    provisional_id=item.provisional_id,
+                    canonical_id=canonical_id,
+                    item_type="decision",
+                    summary=item.summary,
+                )
             )
-        )
 
-    # Resolve new threads
-    existing_thread_max = 0
-    for entry in thread_entries:
-        if entry.id.startswith("T-"):
-            try:
-                _, num = _extract_id_parts(entry.id)
-                if num > existing_thread_max:
-                    existing_thread_max = num
-            except ValueError:
-                pass
-
-    for i, item in enumerate(update_block.new_threads):
-        # Defense-in-depth: check for model-assigned canonical IDs
-        if _LEDGER_ID_RE.match(item.provisional_id):
+    # Resolve new threads — use the single authority allocate_next_id
+    if update_block.new_threads:
+        try:
+            first_new_id = allocate_next_id("T", thread_entries)
+            _, first_num = extract_id_number(first_new_id)
+        except (InvalidIdError, ValueError) as exc:
             errors.append(
                 LoomError(
-                    code=MODEL_ASSIGNED_ID,
-                    message=(
-                        f"Model-proposed canonical ID {item.provisional_id!r} "
-                        f"in new_threads.  IDs are allocated by AIP_Loom, "
-                        f"never by the model."
-                    ),
-                    detail={"provisional_id": item.provisional_id},
+                    code=FIELD_INVALID,
+                    message=f"Cannot allocate next thread ID: {exc}",
+                    detail={"prefix": "T", "error": str(exc)},
                 )
             )
-            continue
+            first_num = 0
 
-        next_num = existing_thread_max + i + 1
-        canonical_id = f"T-{next_num:04d}"
+        for i, item in enumerate(update_block.new_threads):
+            # Defense-in-depth: check for model-assigned canonical IDs
+            if _LEDGER_ID_RE.match(item.provisional_id):
+                errors.append(
+                    LoomError(
+                        code=MODEL_ASSIGNED_ID,
+                        message=(
+                            f"Model-proposed canonical ID {item.provisional_id!r} "
+                            f"in new_threads.  IDs are allocated by AIP_Loom, "
+                            f"never by the model."
+                        ),
+                        detail={"provisional_id": item.provisional_id},
+                    )
+                )
+                continue
 
-        while canonical_id in allocated_thread_ids:
-            next_num += 1
-            canonical_id = f"T-{next_num:04d}"
+            canonical_id = f"T-{first_num + i:04d}"
 
-        allocated_thread_ids.add(canonical_id)
-
-        mappings.append(
-            ProvisionalIdMapping(
-                provisional_id=item.provisional_id,
-                canonical_id=canonical_id,
-                item_type="thread",
-                summary=item.summary,
+            mappings.append(
+                ProvisionalIdMapping(
+                    provisional_id=item.provisional_id,
+                    canonical_id=canonical_id,
+                    item_type="thread",
+                    summary=item.summary,
+                )
             )
-        )
 
     return mappings, errors
 
 
-def _extract_id_parts(id_str: str) -> tuple[str, int]:
-    """Extract the prefix and number from a canonical ID.
 
-    Simple version — just splits on the dash.
-    """
-    parts = id_str.split("-", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid canonical ID: {id_str!r}")
-    return parts[0], int(parts[1])
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +778,8 @@ def _plan_ledger_changes(
                 detail={
                     "summary": item.summary,
                     "rationale": item.rationale,
+                    "scope": item.scope if hasattr(item, "scope") else "global",
+                    "chunk_id": item.chunk_id if hasattr(item, "chunk_id") else "",
                     "review_state": "pending",
                 },
                 requires_human_review=item.requires_human_review,
@@ -764,6 +798,8 @@ def _plan_ledger_changes(
                     "summary": item.summary,
                     "state": item.state.value,
                     "scope": item.scope,
+                    "chunk_id": item.chunk_id if hasattr(item, "chunk_id") else "",
+                    "blocked_by": item.blocked_by if hasattr(item, "blocked_by") else [],
                     "review_state": "pending",
                 },
                 requires_human_review=item.requires_human_review,
@@ -771,13 +807,15 @@ def _plan_ledger_changes(
         )
 
     # Close threads
+    from datetime import datetime as _dt, timezone as _tz
+    closed_at = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for tid in update_block.close_threads:
         changes.append(
             PlannedLedgerChange(
                 change_type="close_thread",
                 item_id=tid,
                 provisional_id="",
-                detail={"state": "closed"},
+                detail={"state": "closed", "closed_at": closed_at},
                 requires_human_review=False,
             )
         )
@@ -821,12 +859,15 @@ def build_reconcile_plan(
     3. **Validate update_existing**: Check that each entry being updated
        exists, and detect close/update conflicts on threads.
     4. **Resolve provisional IDs**: Map model-proposed provisional IDs
-       (``new-1``) to canonical IDs (``D-0005``).
+       (``new-1``) to canonical IDs (``D-0005``) using the single
+       authority ``allocate_next_id`` from ``ids.py``.
     5. **Check auto-approval**: Warn if items requiring review would
        bypass it.
     6. **Plan file changes**: Determine which files will be modified.
     7. **Plan ledger changes**: Enumerate all ledger modifications.
-    8. **Assemble result**: Build the :class:`ReconcilePlan` with all
+    8. **Determine review requirement**: Whether any part of the plan
+       requires human review.
+    9. **Assemble result**: Build the :class:`ReconcilePlan` with all
        changes, conflicts, and warnings.
 
     Parameters

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
-from datetime import datetime
+
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +35,8 @@ from aip_loom.errors import (
     MODEL_ASSIGNED_ID,
     RECONCILE_PRE_VALIDATION_FAILED,
     VALIDATION_BROKEN_REFERENCE,
-    LoomError,
-    LoomWarning,
 )
-from aip_loom.ids import allocate_next_id
+
 from aip_loom.project import ChunkData, ProjectState
 from aip_loom.reconcile_plan import (
     PlannedFileChange,
@@ -50,19 +48,19 @@ from aip_loom.reconcile_plan import (
 from aip_loom.schemas import (
     SUPPORTED_SCHEMA_VERSION,
     ChunkFrontmatter,
-    ChunkStatus,
     DecisionEntry,
     DecisionLedger,
-    Distillate,
     ProjectManifest,
+    QuestionEntry,
+    QuestionLedger,
     ReviewState,
     ThreadEntry,
     ThreadLedger,
     ThreadState,
     UpdateBlock,
+    UpdateExistingEntry,
     UpdateLedgerItemNew,
     UpdateThreadItemNew,
-    UpdateMode,
 )
 from aip_loom.update_parser import ParsedUpdateBlock
 
@@ -110,6 +108,9 @@ def _make_project_state(
     chunk_ids: list[str] | None = None,
     decisions: list[DecisionEntry] | None = None,
     threads: list[ThreadEntry] | None = None,
+    questions: list[QuestionEntry] | None = None,
+    skip_decisions_ledger: bool = False,
+    skip_threads_ledger: bool = False,
 ) -> ProjectState:
     """Create a minimal ProjectState for testing."""
     layout = _make_layout(tmp_path)
@@ -121,6 +122,7 @@ def _make_project_state(
 
     decision_entries = decisions or []
     thread_entries = threads or []
+    question_entries = questions or []
 
     manifest = ProjectManifest(
         schema_version=_V,
@@ -129,13 +131,17 @@ def _make_project_state(
         updated_at=_TS,
     )
 
-    decisions_ledger = DecisionLedger(
-        schema_version=_V,
-        entries=decision_entries,
+    decisions_ledger = (
+        DecisionLedger(schema_version=_V, entries=decision_entries)
+        if not skip_decisions_ledger else None
     )
-    threads_ledger = ThreadLedger(
-        schema_version=_V,
-        entries=thread_entries,
+    threads_ledger = (
+        ThreadLedger(schema_version=_V, entries=thread_entries)
+        if not skip_threads_ledger else None
+    )
+    questions_ledger = (
+        QuestionLedger(schema_version=_V, entries=question_entries)
+        if questions else None
     )
 
     return ProjectState(
@@ -143,7 +149,7 @@ def _make_project_state(
         manifest=manifest,
         decisions_ledger=decisions_ledger,
         threads_ledger=threads_ledger,
-        questions_ledger=None,
+        questions_ledger=questions_ledger,
         distillate=None,
         sessions=None,
         comments=None,
@@ -400,8 +406,6 @@ class TestUpdateExistingValidation:
     def test_update_nonexistent_decision(self, tmp_path: Path) -> None:
         """Updating a decision that doesn't exist → conflict."""
         state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
-        from aip_loom.schemas import UpdateExistingEntry
-
         update_block = _make_update_block(
             update_existing=[
                 UpdateExistingEntry(id="D-9999", changes={"rationale": "Updated"}),
@@ -431,8 +435,6 @@ class TestUpdateExistingValidation:
             ),
         ]
         state = _make_project_state(tmp_path, chunk_ids=["C-0001"], decisions=decisions)
-        from aip_loom.schemas import UpdateExistingEntry
-
         update_block = _make_update_block(
             update_existing=[
                 UpdateExistingEntry(id="D-0001", changes={"rationale": "Updated"}),
@@ -473,8 +475,6 @@ class TestCloseUpdateConflict:
             ),
         ]
         state = _make_project_state(tmp_path, chunk_ids=["C-0001"], threads=threads)
-        from aip_loom.schemas import UpdateExistingEntry
-
         update_block = _make_update_block(
             close_threads=["T-0001"],
             update_existing=[
@@ -715,8 +715,8 @@ class TestFileChanges:
         ledger_changes = [fc for fc in plan.file_changes if fc.change_type == "ledger_update"]
         assert len(ledger_changes) >= 1
 
-    def test_no_prose_no_prose_change(self, tmp_path: Path) -> None:
-        """Ledger-only update (no revised prose) doesn't plan prose change."""
+    def test_no_prose_full_replacement_still_plans_change(self, tmp_path: Path) -> None:
+        """In full_replacement mode, file change is planned even with empty prose."""
         state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
         update_block = _make_update_block(
             revised_prose="",
@@ -733,11 +733,11 @@ class TestFileChanges:
         )
         plan = build_reconcile_plan(parsed, state)
 
-        # In full_replacement mode, we still plan the file change even
-        # if prose is empty (because we need to update frontmatter).
-        # This is correct behavior — the chunk file must be touched
-        # to update checksums even for ledger-only changes.
-        # The key point is no canonical writes during preview.
+        # In full_replacement mode, a prose_replacement is still planned
+        # because the chunk file must be touched to update checksums.
+        prose_changes = [fc for fc in plan.file_changes if fc.change_type == "prose_replacement"]
+        assert len(prose_changes) >= 1
+        # The key point is no canonical writes during preview
 
 
 # ---------------------------------------------------------------------------
@@ -790,7 +790,7 @@ class TestPlanSerialization:
     """Verify plan can be serialized to JSON."""
 
     def test_to_dict_produces_valid_dict(self, tmp_path: Path) -> None:
-        """to_dict() produces a JSON-serializable dictionary."""
+        """to_dict() produces a JSON-serializable dictionary with revised_prose."""
         state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
         parsed = _make_parsed_block()
         plan = build_reconcile_plan(parsed, state)
@@ -799,6 +799,10 @@ class TestPlanSerialization:
         assert isinstance(d, dict)
         assert "target_chunk" in d
         assert "mode" in d
+        assert "revised_prose" in d  # CRITICAL: prose text must be present for Chunk 15
+        assert "revised_prose_length" in d
+        assert d["revised_prose"] == plan.revised_prose
+        assert d["revised_prose_length"] == len(plan.revised_prose)
         assert "ledger_changes" in d
         assert "id_mappings" in d
         assert "file_changes" in d
@@ -997,13 +1001,22 @@ class TestPlanShapeCompleteness:
 
     def test_serialized_plan_is_complete(self, tmp_path: Path) -> None:
         """Serialized plan contains all data needed by apply."""
-        state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
+        threads = [
+            ThreadEntry(
+                id="T-0001",
+                review_state=ReviewState.APPROVED,
+                created_at=_TS,
+                summary="Open thread",
+                state=ThreadState.OPEN,
+            ),
+        ]
+        state = _make_project_state(tmp_path, chunk_ids=["C-0001"], threads=threads)
         update_block = _make_update_block(
             revised_prose="New prose.",
             new_decisions=[
                 UpdateLedgerItemNew(provisional_id="new-1", summary="Decision"),
             ],
-            close_threads=["T-0001"] if False else [],
+            close_threads=["T-0001"],
         )
         parsed = ParsedUpdateBlock(
             update_block=update_block,
@@ -1021,8 +1034,9 @@ class TestPlanShapeCompleteness:
         assert d["target_chunk"] == "C-0001"
         # 2. Know the mode
         assert d["mode"] == "full_replacement"
-        # 3. Get the revised prose
-        assert d["revised_prose_length"] > 0
+        # 3. Get the revised prose text (not just length)
+        assert d["revised_prose"] == "New prose."
+        assert d["revised_prose_length"] == len("New prose.")
         # 4. Iterate over all ledger changes with canonical IDs
         assert isinstance(d["ledger_changes"], list)
         # 5. Map provisional IDs to canonical IDs
@@ -1035,6 +1049,10 @@ class TestPlanShapeCompleteness:
         assert isinstance(d["requires_human_review"], bool)
         # 9. Know if the plan is safe to apply
         assert isinstance(d["plan_ok"], bool)
+        # 10. Close thread details include closed_at
+        close_changes = [lc for lc in d["ledger_changes"] if lc["change_type"] == "close_thread"]
+        assert len(close_changes) == 1
+        assert "closed_at" in close_changes[0]["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -1119,3 +1137,192 @@ class TestEdgeCases:
         plan = build_reconcile_plan(parsed, state)
 
         assert isinstance(plan, ReconcilePlan)
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage — ledger unavailable, detail completeness
+# ---------------------------------------------------------------------------
+
+
+class TestLedgerUnavailable:
+    """Verify behavior when ledgers could not be loaded (None)."""
+
+    def test_close_thread_when_threads_ledger_none(self, tmp_path: Path) -> None:
+        """Closing a thread when threads ledger is None → specific error."""
+        state = _make_project_state(
+            tmp_path,
+            chunk_ids=["C-0001"],
+            skip_threads_ledger=True,
+        )
+        update_block = _make_update_block(close_threads=["T-0001"])
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Revised.",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        assert plan.plan_ok is False
+        ref_conflicts = [c for c in plan.conflicts if c.code == VALIDATION_BROKEN_REFERENCE]
+        assert len(ref_conflicts) >= 1
+        assert "no_threads_ledger" in str(ref_conflicts[0].detail)
+
+    def test_update_decision_when_decisions_ledger_none(self, tmp_path: Path) -> None:
+        """Updating a decision when decisions ledger is None → specific error."""
+        state = _make_project_state(
+            tmp_path,
+            chunk_ids=["C-0001"],
+            skip_decisions_ledger=True,
+        )
+        update_block = _make_update_block(
+            update_existing=[
+                UpdateExistingEntry(id="D-0001", changes={"rationale": "Updated"}),
+            ]
+        )
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Revised.",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        assert plan.plan_ok is False
+        ledger_conflicts = [
+            c for c in plan.conflicts
+            if c.code == VALIDATION_BROKEN_REFERENCE
+            and c.detail.get("reason") == "ledger_unavailable"
+        ]
+        assert len(ledger_conflicts) >= 1
+
+    def test_update_question_when_questions_ledger_none(self, tmp_path: Path) -> None:
+        """Updating a question when questions ledger is None → specific error."""
+        state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
+        # questions_ledger is None by default when no questions provided
+        update_block = _make_update_block(
+            update_existing=[
+                UpdateExistingEntry(id="Q-0001", changes={"answer": "Updated"}),
+            ]
+        )
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Revised.",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        assert plan.plan_ok is False
+        ledger_conflicts = [
+            c for c in plan.conflicts
+            if c.code == VALIDATION_BROKEN_REFERENCE
+            and c.detail.get("reason") == "ledger_unavailable"
+        ]
+        assert len(ledger_conflicts) >= 1
+
+
+class TestDetailCompleteness:
+    """Verify that PlannedLedgerChange detail dicts are complete for Chunk 15."""
+
+    def test_new_decision_detail_has_scope_and_chunk_id(self, tmp_path: Path) -> None:
+        """New decision detail includes scope and chunk_id fields."""
+        state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
+        update_block = _make_update_block(
+            new_decisions=[
+                UpdateLedgerItemNew(
+                    provisional_id="new-1",
+                    summary="A decision",
+                    scope="chunk",
+                    chunk_id="C-0001",
+                ),
+            ]
+        )
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Revised.",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        new_decision = [lc for lc in plan.ledger_changes if lc.change_type == "new_decision"][0]
+        assert "scope" in new_decision.detail
+        assert "chunk_id" in new_decision.detail
+        assert new_decision.detail["scope"] == "chunk"
+        assert new_decision.detail["chunk_id"] == "C-0001"
+
+    def test_new_thread_detail_has_chunk_id_and_blocked_by(self, tmp_path: Path) -> None:
+        """New thread detail includes chunk_id and blocked_by fields."""
+        state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
+        update_block = _make_update_block(
+            new_threads=[
+                UpdateThreadItemNew(
+                    provisional_id="new-1",
+                    summary="A thread",
+                    chunk_id="C-0001",
+                ),
+            ]
+        )
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Revised.",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        new_thread = [lc for lc in plan.ledger_changes if lc.change_type == "new_thread"][0]
+        assert "chunk_id" in new_thread.detail
+        assert "blocked_by" in new_thread.detail
+        assert new_thread.detail["chunk_id"] == "C-0001"
+
+    def test_close_thread_detail_has_closed_at(self, tmp_path: Path) -> None:
+        """Close thread detail includes closed_at timestamp."""
+        threads = [
+            ThreadEntry(
+                id="T-0001",
+                review_state=ReviewState.APPROVED,
+                created_at=_TS,
+                summary="Open thread",
+                state=ThreadState.OPEN,
+            ),
+        ]
+        state = _make_project_state(tmp_path, chunk_ids=["C-0001"], threads=threads)
+        update_block = _make_update_block(close_threads=["T-0001"])
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Revised.",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        close_change = [lc for lc in plan.ledger_changes if lc.change_type == "close_thread"][0]
+        assert "closed_at" in close_change.detail
+        assert close_change.detail["closed_at"].endswith("Z")  # ISO timestamp
+
+    def test_to_dict_round_trip_preserves_prose(self, tmp_path: Path) -> None:
+        """Round-trip through JSON preserves the revised prose exactly."""
+        state = _make_project_state(tmp_path, chunk_ids=["C-0001"])
+        update_block = _make_update_block(revised_prose="Hello\nWorld\nSpecial chars: <>&\"'")
+        parsed = ParsedUpdateBlock(
+            update_block=update_block,
+            revised_prose="Hello\nWorld\nSpecial chars: <>&\"'",
+            raw_content="yaml",
+            fence_start=0,
+            fence_end=100,
+        )
+        plan = build_reconcile_plan(parsed, state)
+
+        d = plan.to_dict()
+        json_str = json.dumps(d, ensure_ascii=False)
+        parsed_back = json.loads(json_str)
+
+        assert parsed_back["revised_prose"] == "Hello\nWorld\nSpecial chars: <>&\"'"

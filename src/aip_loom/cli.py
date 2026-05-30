@@ -35,6 +35,7 @@ from .errors import (
 from .init import InitError, init_project
 from .output import render_result
 from .project import ProjectError, ValidationResult, load_project, validate_project
+from .reconcile_apply import apply_reconcile_plan
 from .reconcile_plan import ReconcilePlan, build_reconcile_plan
 from .results import CommandResult
 from .status import HealthLevel, StatusReport, compute_status
@@ -347,6 +348,7 @@ def _run_reconcile(
     chunk: str,
     output_path: str | None,
     preview: bool,
+    allow_dirty_git: bool = False,
 ) -> CommandResult:
     """Reconcile service — delegates to build_reconcile_plan.
 
@@ -421,10 +423,25 @@ def _run_reconcile(
             message="Parser succeeded but no parsed block object in result data",
         )
 
-    # 5. Build the reconcile plan
+    # 5. Validate that the CLI chunk argument matches the model output target
+    model_target = parsed_block_obj.update_block.target_chunk
+    if chunk != model_target:
+        return CommandResult.failure(
+            command="reconcile",
+            code=RECONCILE_PRE_VALIDATION_FAILED,
+            message=(
+                f"Chunk mismatch: CLI argument specifies {chunk!r} but "
+                f"model output targets {model_target!r}.  The chunk ID "
+                f"on the command line must match the target_chunk in the "
+                f"model output."
+            ),
+            detail={"cli_chunk": chunk, "model_target": model_target},
+        )
+
+    # 6. Build the reconcile plan
     plan = build_reconcile_plan(parsed_block_obj, state)
 
-    # 6. Handle preview mode vs apply mode
+    # 7. Handle preview mode vs apply mode
     if preview:
         # Preview mode: return the plan without any canonical writes
         plan_data = plan.to_dict()
@@ -464,14 +481,12 @@ def _run_reconcile(
                 warnings=all_warnings,
             )
     else:
-        # Apply mode — not yet implemented (Chunk 15)
-        return CommandResult.failure(
-            command="reconcile",
-            code=NOT_IMPLEMENTED,
-            message=(
-                "Reconcile apply is not yet implemented.  "
-                "Use --preview to see the planned changes."
-            ),
+        # Apply mode — delegate to the transactional apply engine
+        return apply_reconcile_plan(
+            plan=plan,
+            model_output_text=model_output_text,
+            root=root,
+            allow_dirty_git=allow_dirty_git,
         )
 
 
@@ -544,9 +559,10 @@ def reconcile(
     chunk: str = typer.Argument(..., help="Target chunk ID."),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Path to model output file."),
     preview: bool = typer.Option(False, "--preview", help="Preview changes without applying."),
+    allow_dirty_git: bool = typer.Option(False, "--allow-dirty-git", help="Allow reconcile when Git working tree is dirty."),
     json_output: bool = JsonFlag,
 ) -> None:
     """Reconcile model output with project state."""
-    result = _run_reconcile(chunk=chunk, output_path=output, preview=preview)
+    result = _run_reconcile(chunk=chunk, output_path=output, preview=preview, allow_dirty_git=allow_dirty_git)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)

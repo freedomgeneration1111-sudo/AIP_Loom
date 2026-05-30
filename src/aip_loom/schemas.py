@@ -504,6 +504,8 @@ class UpdateLedgerItemNew(_LoomModel):
     provisional_id: str = Field(pattern=r"^new-\d+$")
     summary: str = Field(min_length=1)
     rationale: str = Field(default="")
+    scope: Literal["global", "chunk"] = "global"
+    chunk_id: str = Field(default="")
     review_state: Literal[ReviewState.PENDING] = ReviewState.PENDING
     requires_human_review: bool = True
 

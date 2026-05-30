@@ -669,8 +669,11 @@ in the codebase is a **spec violation**.
     ``requires_human_review=False`` but individual items have
     ``requires_human_review=True`` → ``AUTO_APPROVAL_BLOCKED`` warning.
   - **Provisional ID resolution**: Maps ``new-1`` → ``D-0005`` using
-    existing ledger state.  Deterministic given same state and input.
-    Sequential allocation (no gap-filling).
+    :func:`allocate_next_id` from ``ids.py`` (the single authority).
+    Deterministic given same state and input.  Sequential allocation
+    (no gap-filling).  Multiple new items of the same type are
+    resolved by calling ``allocate_next_id`` once for the first, then
+    incrementing.
   - **File change planning**: Determines which canonical files will be
     modified (chunk file, decisions ledger, threads ledger, questions ledger).
   - **CLI integration**: ``aip-loom reconcile <chunk> --output <file>
@@ -693,10 +696,82 @@ in the codebase is a **spec violation**.
     the CLI can pass it directly to ``build_reconcile_plan`` without
     re-parsing.
 
-- Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
+- **Reconcile apply: src/aip_loom/reconcile_apply.py** *(implemented — Chunk 15)*
+  - This is the **single authority** for applying a ``ReconcilePlan`` to
+    canonical project state.  No other module may modify canonical files
+    based on model output — it must delegate to :func:`apply_reconcile_plan`
+    here.
+  - **Plan consumption rule (CRITICAL)**: ``apply_reconcile_plan`` consumes
+    a ``ReconcilePlan`` directly.  It **must not** re-parse model output,
+    re-resolve provisional IDs, re-validate references, or rebuild the
+    plan in any way.  The plan is the contract; apply only executes it.
+  - **14-step mandatory protocol** (BuildSpec §15, must be followed exactly):
+    1. Acquire lock
+    2. Load project + pre-validation
+    3. Git cleanliness check (unless ``--allow-dirty-git``)
+    4. (Steps 4-5 done by caller: parse + build plan)
+    5. Verify plan is still applicable (plan_ok, target chunk exists)
+    6. Snapshot all files that will be modified
+    7. Write pre-archive evidence
+    8. Staged state: apply ledger changes in-memory, build chunk content
+    9. Canonical replacement with rollback-on-failure
+    10. Post-apply validation (workspace committed **after** this succeeds)
+    11. Complete archive + session append
+    12. Git add/commit (with RECOVERY.md on failure)
+    13. Release lock (in ``finally`` block)
+    14. Build and return summary result
+  - **Recovery contracts** (proven by tests in TestRecoveryContracts):
+    - ``RECONCILE_RESTORED_AFTER_FAILURE``: Any failure before/after
+      canonical replacement restores all snapshotted files.  Project
+      is in exact pre-apply state.
+    - ``RECONCILE_APPLIED_BUT_GIT_FAILED``: Canonical writes succeed but
+      Git commit fails.  Writer data is **preserved** on disk.  A
+      ``RECOVERY.md`` file is written with exact manual recovery commands.
+      Files are NOT restored.
+    - ``RECONCILE_POST_VALIDATION_FAILED``: Post-apply validation finds
+      errors.  All snapshotted files are restored (same as any pre-
+      replacement failure).  The workspace must still be ACTIVE when
+      restore is called — ``workspace.commit()`` is only called AFTER
+      post-apply validation passes.
+    - ``RECONCILE_STAGED_VALIDATION_FAILED``: Staged ledger application
+      fails before any canonical writes.  Nothing on disk is modified.
+  - **Lock held throughout**: Lock is acquired before step 1 and released
+    in a ``finally`` block after step 12 (or any error exit).
+  - **Snapshot before modify**: ``TransactionWorkspace.snapshot_file()`` is
+    called for every file that will be modified before any canonical write.
+  - **RECOVERY.md**: Written when Git commit fails.  Contains exact
+    ``git add`` and ``git commit`` commands, transaction ID, session ID,
+    and undo instructions (``git checkout -- .``).  Located at project root.
+  - **Archive evidence**: Pre- and post-reconcile JSON files written to
+    ``archive/`` directory with plan snapshot, chunk checksum, and metadata.
+    Non-blocking (write failures produce warnings, not errors).
+  - **Session log**: A new ``SessionEntry`` is appended to ``sessions.yaml``
+    with ``reconcile_applied=True`` and the allocated session ID.
+  - **Ledger mutation**: ``_apply_ledger_changes()`` applies plan changes
+    to in-memory copies of Pydantic ledger models.  Supports:
+    ``new_decision``, ``new_thread``, ``close_thread``, ``update_existing``.
+  - **Chunk file update**: ``_build_updated_chunk_content()`` replaces the
+    prose body, updates the checksum, sets status to ``revised``, and
+    updates the ``updated_at`` timestamp.
+  - **Ledger serialization**: ``_serialize_ledger()`` converts Pydantic
+    models to YAML via ``dump_yaml_string()`` from the single YAML gateway.
+  - **ReconcileApplyResult**: Frozen dataclass recording plan_applied,
+    target_chunk, ledger/id/file change counts, git_committed,
+    recovery_file_written, tx_id, and session_id.  ``to_dict()`` produces
+    JSON-serializable output.
+  - **CLI integration**: ``aip-loom reconcile <chunk> --output <file>``
+    (without ``--preview``) delegates to ``apply_reconcile_plan()``.
+    Supports ``--allow-dirty-git`` and ``--json`` flags.
+  - Error codes used: ``RECONCILE_PRE_VALIDATION_FAILED``, ``GIT_DIRTY``,
+    ``LOCK_HELD``, ``RECONCILE_STAGED_VALIDATION_FAILED``,
+    ``RECONCILE_RESTORED_AFTER_FAILURE``, ``RECONCILE_POST_VALIDATION_FAILED``,
+    ``RECONCILE_APPLIED_BUT_GIT_FAILED``, ``RECONCILE_PARTIAL_CORRUPTION``,
+    ``FILE_WRITE_ERROR``, ``GIT_COMMIT_FAILED``.
+  - Warning codes used: ``RECOVERY_FILE_EXISTS``, ``CHECKSUM_MISMATCH``,
+    ``RECONCILE_PARTIAL_CORRUPTION``, plus all plan/validation warnings.
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11, brief wired in Chunk 12, reconcile --preview wired in Chunk 14)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11, brief wired in Chunk 12, reconcile --preview wired in Chunk 14, reconcile apply wired in Chunk 15)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
 
 ## Project Initialisation
