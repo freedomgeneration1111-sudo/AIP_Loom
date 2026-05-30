@@ -32,6 +32,7 @@ from .errors import (
     LoomError,
     LoomWarning,
 )
+from .build import run_build
 from .init import InitError, init_project
 from .output import render_result
 from .project import ProjectError, ValidationResult, load_project, validate_project
@@ -564,5 +565,18 @@ def reconcile(
 ) -> None:
     """Reconcile model output with project state."""
     result = _run_reconcile(chunk=chunk, output_path=output, preview=preview, allow_dirty_git=allow_dirty_git)
+    render_result(result, use_json=json_output)
+    raise typer.Exit(code=result.exit_code)
+
+
+@app.command()
+def build(
+    mode: str = typer.Option("draft", "--mode", "-m", help="Build mode (only 'draft' supported)."),
+    format: str = typer.Option("md", "--format", "-f", help="Output format (only 'md' supported)."),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path (defaults to build/draft.md)."),
+    json_output: bool = JsonFlag,
+) -> None:
+    """Build draft output from project chunks."""
+    result = run_build(mode=mode, fmt=format, output_path=output)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)
