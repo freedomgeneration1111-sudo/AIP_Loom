@@ -47,3 +47,29 @@ Stage Summary:
 - tests/test_project.py: 50 new tests
 - tests/test_cli.py: 6 validate tests replacing 2 placeholder tests
 - Zero regressions across 537 total tests
+---
+Task ID: 10
+Agent: main
+Task: Implement Chunk 10 — aip-loom status command
+
+Work Log:
+- Read all existing modules: project.py, cli.py, layout.py, git.py, lock.py, results.py, errors.py, output.py, schemas.py, PATTERN_REGISTRY.md
+- Performed Before-Code Ritual: identified 6 files to touch, 8 existing modules to reuse, anti-patterns to avoid
+- Designed StatusReport dataclass with HealthLevel enum (HEALTHY/DEGRADED/BLOCKED)
+- Implemented src/aip_loom/status.py with compute_status(), sub-report dataclasses, honest health classification
+- Updated cli.py: replaced _stub_status() with _run_status() that delegates to compute_status()
+- Added Rich dashboard renderer _render_status_dashboard() in output.py
+- Updated test_cli.py: replaced TestPlaceholderStatus with TestStatusCommand (real tests), fixed TestNoFilesystemMutation
+- Wrote 69 comprehensive tests in test_status.py covering all scenarios
+- Updated PATTERN_REGISTRY.md with Status section
+- All 609 tests pass with zero regressions
+- Committed and pushed to origin/main
+
+Stage Summary:
+- New module: src/aip_loom/status.py (compute_status, StatusReport, HealthLevel, sub-report dataclasses)
+- Modified: src/aip_loom/cli.py (_run_status replacing _stub_status)
+- Modified: src/aip_loom/output.py (dedicated status dashboard renderer)
+- Modified: tests/test_cli.py (real status tests replacing placeholder)
+- New: tests/test_status.py (69 tests)
+- Modified: .agent/PATTERN_REGISTRY.md (Status section added)
+- Commit: f629bab, pushed to origin/main
