@@ -436,7 +436,14 @@ def _run_reconcile(
                 f"on the command line must match the target_chunk in the "
                 f"model output."
             ),
-            detail={"cli_chunk": chunk, "model_target": model_target},
+            errors=[LoomError(
+                code=RECONCILE_PRE_VALIDATION_FAILED,
+                message=(
+                    f"Chunk mismatch: CLI specifies {chunk!r}, "
+                    f"model output targets {model_target!r}"
+                ),
+                detail={"cli_chunk": chunk, "model_target": model_target},
+            )],
         )
 
     # 6. Build the reconcile plan
