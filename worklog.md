@@ -21,3 +21,26 @@ Stage Summary:
 - 102 new tests covering positive + negative cases for all four modules
 - All key requirements met: canonical-only ID allocation, prose-body-only checksum, no filename inference, CHUNK_ORDER_FALLBACK_USED warning
 - Commit: feat(chunk-04): implement IDs, checksums, frontmatter, and chunk order helpers
+
+---
+Task ID: 5
+Agent: main
+Task: Implement CHUNK 05 — Filesystem Layout, Atomic Write, Locking, and Path Safety
+
+Work Log:
+- Pulled latest repo, studied all existing modules from Chunks 01-04
+- Performed Before-Code Ritual: cataloged 6 anti-patterns, 4 reusable patterns, 3 new abstractions
+- Created src/aip_loom/layout.py with ProjectLayout frozen dataclass, 14 path properties, chunk_path/archive_chunk_path with ID validation, validate_path with .. / symlink-escape / path-escape checks
+- Created src/aip_loom/fs.py with atomic_write context manager (temp+fsync+replace), safe_write_text, safe_write_bytes, ensure_directory, AtomicWriteError
+- Created src/aip_loom/lock.py with ProjectLock (O_CREAT|O_EXCL), PID liveness via os.kill(pid, 0), stale lock detection with diagnostics, force_release, LockInfo, acquire_lock convenience
+- Updated .agent/PATTERN_REGISTRY.md with mandatory rule for all path construction, file writing, and locking
+- Created 3 test files with 72 tests total
+- Fixed 2 test issues: symlink escape detection fires as path_escape before symlink_escape (both valid), RuntimeError in atomic_write gets wrapped in AtomicWriteError
+- All 339 tests pass (72 new + 267 existing)
+- Committed and pushed to remote
+
+Stage Summary:
+- 3 new production modules, 3 new test files, 1 updated pattern registry
+- 72 new tests covering positive + negative cases for all three modules
+- All key requirements met: ID validation before path construction, atomic write with fsync+replace, O_CREAT|O_EXCL locking, PID liveness, stale lock diagnostics with recovery instructions, no silent lock deletion, path traversal rejection, symlink escape rejection
+- Commit: feat(chunk-05): implement filesystem layout, atomic write, and locking
