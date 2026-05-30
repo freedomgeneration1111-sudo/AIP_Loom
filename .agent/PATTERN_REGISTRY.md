@@ -48,9 +48,71 @@ patterns registered here.
     update item models.
 
 ## Filesystem and Transactions
-- ProjectLayout: src/aip_loom/layout.py *(not yet implemented — Chunk 05)*
-- Atomic write: src/aip_loom/fs.py *(not yet implemented — Chunk 05)*
-- Locking: src/aip_loom/lock.py *(not yet implemented — Chunk 05)*
+
+**Mandatory rule (Chunk 05):** All filesystem path construction, file
+writing, and locking **must** go through these three modules only.
+Any ad-hoc ``pathlib`` composition from IDs, direct ``open(..., 'w')``,
+or custom locking elsewhere in the codebase is a **spec violation**.
+
+- **Project layout: src/aip_loom/layout.py** *(implemented — Chunk 05)*
+  - This is the **single authority** for resolving every canonical path
+    in an AIP_Loom project.  No other module may construct paths from
+    IDs, filenames, or model-provided strings.
+  - Provides: ``ProjectLayout(root)`` (frozen dataclass), ``LayoutError``.
+  - Properties: ``manifest_path``, ``distillate_path``, ``sessions_path``,
+    ``comments_path``, ``chunks_dir``, ``ledgers_dir``, ``archive_dir``,
+    ``aip_loom_dir``, ``staging_dir``, ``decisions_ledger_path``,
+    ``threads_ledger_path``, ``questions_ledger_path``, ``lock_path``.
+  - Methods: ``chunk_path(chunk_id)`` (validates ID against schema regex
+    before path construction), ``archive_chunk_path(chunk_id)``,
+    ``validate_path(path)`` (rejects ``..``, symlinks escaping root,
+    resolved paths outside root), ``is_project_initialized()``.
+  - **ID validation before path construction**: ``chunk_path()`` validates
+    the chunk ID against ``_CHUNK_ID_RE`` before building any path.
+    This prevents path traversal through malformed IDs.
+  - **Path safety**: ``validate_path()`` checks resolved paths stay within
+    root, rejects ``..`` components, and checks symlink targets.
+  - **Root must exist**: Constructor requires an existing directory.
+
+- **Atomic write: src/aip_loom/fs.py** *(implemented — Chunk 05)*
+  - This is the **single authority** for all file writing.  No other
+    module may perform direct file writes (``open(..., 'w')`` or
+    ``pathlib.Path.write_text()``).  All writes must go through here.
+  - Provides: ``atomic_write(target, layout)`` (context manager),
+    ``safe_write_text(target, content, layout)``,
+    ``safe_write_bytes(target, content, layout)``,
+    ``ensure_directory(path)``, ``AtomicWriteError``.
+  - **Atomic write protocol**: write to temp file in same directory →
+    fsync temp file → fsync parent directory → ``os.replace`` →
+    fsync parent directory again.  Same-directory temp file ensures
+    ``os.replace`` is atomic (same filesystem).
+  - **Cleanup on failure**: If writing or replacing fails, the temp file
+    is removed and the original file is left untouched.
+  - **Path safety**: All write functions validate the target path against
+    the project layout before writing.
+  - **fsync discipline**: Both file and directory are fsynced.  Directory
+    fsync is best-effort (some filesystems don't support it).
+
+- **Locking: src/aip_loom/lock.py** *(implemented — Chunk 05)*
+  - This is the **single authority** for exclusive project locking.
+    No other module may implement its own locking mechanism.
+  - Provides: ``ProjectLock(layout, command)`` (context manager),
+    ``acquire_lock(layout, command)`` (convenience context manager),
+    ``LockError``, ``LockInfo`` (frozen dataclass).
+  - **Exclusive create**: Uses ``O_CREAT | O_EXCL`` for atomic lock
+    file creation.  If the file already exists, ``LOCK_HELD`` is raised.
+  - **PID liveness**: On POSIX, uses ``os.kill(pid, 0)`` to check if
+    the lock-holding process is alive.  On other platforms, returns
+    ``None`` (uncertain) and treats the lock as potentially held.
+  - **Stale lock detection**: Reports PID, command, age, and liveness
+    status.  Includes recovery instructions in the error message.
+    Stale locks emit ``STALE_LOCK_DETECTED`` warning and raise
+    ``LOCK_STALE`` error code.
+  - **No silent deletion**: Stale locks are never deleted automatically.
+    The caller must explicitly call ``force_release()`` after reviewing
+    diagnostics.
+  - **Lock file format**: ``<pid>:<command>`` (e.g. ``12345:reconcile``).
+
 - Transaction workspace: src/aip_loom/transaction.py *(not yet implemented — Chunk 07)*
 
 ## Git
