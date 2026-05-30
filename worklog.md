@@ -95,3 +95,32 @@ Stage Summary:
 - Failure injection protocol for testing rollback paths
 - Workspace layout: .aip-loom/tmp/<txid>/ with manifest.json, staged/, snapshots/
 - All 432 tests pass, commit 5d3ffdd pushed to origin/main
+
+---
+Task ID: 8
+Agent: Main Agent
+Task: Implement Chunk 08 — aip-loom init command
+
+Work Log:
+- Pulled latest repo (commit 5d3ffdd)
+- Read all existing modules: errors.py, results.py, schemas.py, yaml_io.py, fs.py, lock.py, git.py, transaction.py, layout.py, cli.py, output.py, PATTERN_REGISTRY
+- Performed Before-Code Ritual: documented files to touch, reusable patterns (CommandResult, ProjectLayout, safe_write_text, dump_yaml_string, TransactionWorkspace, ProjectType), anti-patterns (hardcoded sample content, leaving partial projects, bypassing yaml_io/schemas)
+- Created src/aip_loom/init.py with: init_project(), InitError, InitResult, _validate_project_type(), _build_manifest_yaml(), _build_empty_ledger_yaml(), _build_empty_distillate_yaml(), _build_empty_session_log_yaml(), _build_empty_comment_log_yaml(), _rollback(), _cleanup_partial()
+- Modified src/aip_loom/cli.py: replaced _stub_init with _run_init delegation, added --dir option, wired to init_project
+- Added GIT_INIT_SKIPPED warning code to src/aip_loom/errors.py
+- Created tests/test_init.py with 45 comprehensive tests across 10 test classes
+- Updated tests/test_cli.py: replaced TestPlaceholderInit with TestInitCommand (10 tests), excluded init from no-mutation safety test
+- Updated .agent/PATTERN_REGISTRY.md with init service entry and mandatory rule
+- All 483 tests pass (45 new init + 10 new CLI + 428 existing)
+- Committed and pushed to remote
+
+Stage Summary:
+- src/aip_loom/init.py: Single authority for creating new AIP_Loom projects
+- Create-or-fail semantics: TransactionWorkspace rollback, _cleanup_partial on failure
+- No fake approved content: empty distillate nodes, empty ledger entries
+- Schema-valid output: all files constructed from validated Pydantic model instances
+- Git best-effort: init + commit attempted, non-fatal, GIT_INIT_SKIPPED warning
+- Project type validation: invalid types rejected with FIELD_INVALID before any file creation
+- Existing project detection: PROJECT_ALREADY_EXISTS when aip_loom.yaml exists
+- CLI: --type flag for project type, --dir for project directory, --json output
+- All 483 tests pass, commit 4a62a80 pushed to origin/main
