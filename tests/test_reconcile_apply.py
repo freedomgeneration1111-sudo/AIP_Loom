@@ -43,6 +43,7 @@ from aip_loom.errors import (
     RECONCILE_PRE_VALIDATION_FAILED,
     RECONCILE_RESTORED_AFTER_FAILURE,
     RECONCILE_STAGED_VALIDATION_FAILED,
+    RECOVERY_FILE_EXISTS,
 )
 from aip_loom.git import configure_local_git
 from aip_loom.init import init_project
@@ -473,6 +474,36 @@ class TestGitCleanliness:
 
         # Should succeed (or at least not fail due to dirty Git)
         assert result.code != GIT_DIRTY
+
+
+# ---------------------------------------------------------------------------
+# Recovery file pre-existence tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecoveryFileExists:
+    """Verify that a pre-existing RECOVERY.md blocks reconcile."""
+
+    def test_existing_recovery_md_blocks_reconcile(self, project_dir: Path) -> None:
+        """If RECOVERY.md exists, reconcile is refused."""
+        # Write a RECOVERY.md to simulate a previous failed reconcile
+        (project_dir / "RECOVERY.md").write_text(
+            "# RECOVERY\nPrevious reconcile failed.", encoding="utf-8"
+        )
+
+        plan = _build_plan_from_output(_MINIMAL_MODEL_OUTPUT, project_dir)
+        result = apply_reconcile_plan(
+            plan=plan,
+            model_output_text=_MINIMAL_MODEL_OUTPUT,
+            root=project_dir,
+        )
+
+        assert not result.ok
+        assert result.code == RECOVERY_FILE_EXISTS
+        # Verify no canonical files were changed
+        state = load_project(project_dir)
+        # The decisions ledger should still be empty (no new entries)
+        assert len(state.decisions_ledger.entries) == 0
 
 
 # ---------------------------------------------------------------------------

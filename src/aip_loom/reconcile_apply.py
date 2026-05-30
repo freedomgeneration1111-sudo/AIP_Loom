@@ -424,6 +424,9 @@ def _write_pre_archive_evidence(
             if plan.target_chunk in state.chunks
             else None
         ),
+        "model_output_length": (
+            len(plan.revised_prose) if plan.revised_prose else 0
+        ),
     }
 
     content = json.dumps(evidence, indent=2, ensure_ascii=False, default=str)
@@ -705,6 +708,29 @@ def apply_reconcile_plan(
             errors=[LoomError(
                 code=RECONCILE_PRE_VALIDATION_FAILED,
                 message=str(exc),
+            )],
+            warnings=all_warnings,
+        )
+
+    # Check for pre-existing RECOVERY.md — refuse to reconcile
+    # if one exists, since it indicates a previous reconcile was
+    # applied but never committed.
+    recovery_path = root / "RECOVERY.md"
+    if recovery_path.exists():
+        return CommandResult.failure(
+            command="reconcile",
+            code=RECOVERY_FILE_EXISTS,
+            message=(
+                "A RECOVERY.md file already exists.  This indicates a "
+                "previous reconcile was applied but the Git commit "
+                "failed.  Either complete the previous reconcile "
+                "(see RECOVERY.md) or undo it before starting a new "
+                "reconcile."
+            ),
+            errors=[LoomError(
+                code=RECOVERY_FILE_EXISTS,
+                message="RECOVERY.md exists — resolve previous reconcile first",
+                detail={"path": str(recovery_path)},
             )],
             warnings=all_warnings,
         )
