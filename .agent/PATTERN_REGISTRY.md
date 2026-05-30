@@ -538,7 +538,97 @@ duplication of selection logic is permitted.
     ``SelectedContext`` and ``ProjectState``.
 
 ## Reconcile
-- Update parser: src/aip_loom/update_parser.py *(not yet implemented — Chunk 13)*
+
+**Mandatory rule (Chunk 13):** Model-output parsing **must** go through
+`update_parser.py` only.  No other module may independently parse,
+extract, or interpret model output.  This module is the **security
+boundary** between untrusted model output and the rest of the system.
+Any ad-hoc fence scanning, YAML parsing, or prose extraction elsewhere
+in the codebase is a **spec violation**.
+
+- **Update parser: src/aip_loom/update_parser.py** *(implemented — Chunk 13)*
+  - This is the **single authority** and **only** parser for model-output
+    update blocks.  No other module may independently parse, extract, or
+    interpret model output — it must delegate to :func:`parse_model_output`
+    here.  This module is the security boundary between untrusted model
+    output and the rest of the system.
+  - Provides: ``parse_model_output(text)`` → ``CommandResult``,
+    ``ParsedUpdateBlock`` (frozen dataclass), ``MAX_UPDATE_BLOCK_SIZE``,
+    ``MAX_YAML_DEPTH``, ``FENCE_TYPE_LOOM_UPDATE``,
+    ``FENCE_TYPE_THREAD_UPDATE``.
+  - **Untrusted input**: Model output is treated as hostile.  Every field
+    is validated; nothing is trusted by default.  No auto-correction, no
+    guessing, no silent fallbacks.  Fail fast with helpful error messages.
+  - **Exact fence matching**: The fence type ``loom-update`` must match
+    **exactly** — no near-miss variants (``loom_update``, ``Loom-Update``,
+    ``LOOM-UPDATE``) are accepted.  The regex for opening fence is
+    ``^```loom-update\s*$`` with ``re.MULTILINE``.
+  - **Single block per response**: Exactly one ``loom-update`` block must
+    be present.  Zero blocks → ``UPDATE_BLOCK_MISSING``; two or more →
+    ``UPDATE_BLOCK_MULTIPLE``.  Multiple blocks indicate ambiguous or
+    conflicting updates.
+  - **Legacy fence rejection**: The ``thread-update`` fence type is
+    explicitly rejected with ``UPDATE_BLOCK_LEGACY_FENCE`` — even when
+    a ``loom-update`` block is also present.
+  - **Strict YAML mode**: All YAML inside the block is parsed through
+    ``yaml_io.load_yaml_string_as()`` with ``YamlMode.UPDATE_BLOCK``,
+    which rejects anchors, aliases, tags, and duplicate keys.  The
+    parser does NOT import ruamel.yaml directly — it goes through the
+    single YAML gateway.
+  - **Schema validation**: The parsed YAML is validated against
+    ``UpdateBlock`` from ``schemas.py``, which enforces:
+    ``extra="forbid"``, ``mode=full_replacement`` (patch rejected),
+    canonical ID rejection in new items, and target chunk ID format.
+  - **Patch mode hard rejection**: ``mode: patch`` is rejected with
+    ``PATCH_MODE_UNSUPPORTED``.  The schema enforces this; the parser
+    surfaces it with a clear error message directing the model to use
+    ``full_replacement``.
+  - **Model-assigned ID rejection**: If the model attempts to assign
+    canonical IDs (like ``D-0001``) to new ledger items, the parser
+    rejects with ``MODEL_ASSIGNED_ID``.  Schema-level enforcement
+    (pattern on ``provisional_id``) provides defense-in-depth.
+  - **Prose extraction**: For ``full_replacement`` mode, the revised
+    prose is extracted from the Markdown section under the
+    ``# Revised Chunk`` heading, ending before ``# Change Summary`` or
+    the next heading of equal/higher level.  Multiple ``# Revised Chunk``
+    headings → ``PROSE_EXTRACTION_AMBIGUOUS``.  No heading is valid
+    (ledger-only update).
+  - **Content splitting**: The raw content between fences is split at
+    the first ``---`` separator into YAML frontmatter and Markdown body.
+    No separator means all content is YAML.
+  - **Size/depth limits**: ``MAX_UPDATE_BLOCK_SIZE`` (500,000 chars) and
+    ``MAX_YAML_DEPTH`` (10 levels) prevent resource-exhaustion attacks.
+  - **No auto-correction**: The parser never auto-corrects model output.
+    Wrong fence types are not silently matched.  Missing fields are not
+    filled in.  Patch mode is not treated as full_replacement.
+  - **Deterministic**: Given the same input text, the parser always
+    produces the same output (same target_chunk, mode, parsed dict).
+  - **Fence scanner**: ``_scan_fences()`` uses compiled regex patterns
+    to find opening and closing fences, categorising them as
+    ``loom-update``, ``thread-update``, or unknown.
+  - **ParsedUpdateBlock**: Frozen dataclass containing the validated
+    ``UpdateBlock`` schema instance, extracted revised prose, raw
+    content, and fence positions.  ``to_dict()`` produces a complete
+    JSON-serialisable dictionary.
+  - **CommandResult integration**: Returns ``CommandResult`` with
+    ``command="parse_update"``, stable error codes, and machine-readable
+    detail dicts on failure.
+  - **TypeError handling**: Non-mapping YAML (e.g. a list) that causes
+    a ``TypeError`` during Pydantic construction is caught and converted
+    to ``UPDATE_BLOCK_MALFORMED`` with a clear message.
+  - **Empty block rejection**: Whitespace-only or empty content between
+    fences is rejected with ``UPDATE_BLOCK_MALFORMED``.
+  - **Unclosed fence**: An opening `````loom-update```` without a matching
+    closing ````````` is reported as ``UPDATE_BLOCK_MISSING`` (the fence
+    scanner does not match it as a complete block).
+  - Error codes used: ``UPDATE_BLOCK_MISSING``, ``UPDATE_BLOCK_MULTIPLE``,
+    ``UPDATE_BLOCK_LEGACY_FENCE``, ``UPDATE_BLOCK_MALFORMED``,
+    ``PATCH_MODE_UNSUPPORTED``, ``PROSE_EXTRACTION_AMBIGUOUS``,
+    ``MODEL_ASSIGNED_ID``.
+  - Also surfaces (from ``yaml_io``): ``YAML_ANCHORS_ALIASES``,
+    ``YAML_DUPLICATE_KEYS``, ``YAML_TAGS_REJECTED``,
+    ``SCHEMA_VALIDATION_FAILED``, ``YAML_PARSE_ERROR``.
+
 - Reconcile planner: src/aip_loom/reconcile_plan.py *(not yet implemented — Chunk 14)*
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
