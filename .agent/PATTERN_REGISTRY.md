@@ -326,6 +326,56 @@ frontmatter regex, or chunk sorting elsewhere in the codebase is a
   - ``ChunkOrderResult`` is frozen and includes ``used_manifest_order``
     flag for downstream logic.
 
+## Status
+
+**Mandatory rule (Chunk 10):** Project status computation **must** go
+through `status.py` only.  No other module may independently compute
+and present project status.  Status must be honest — never fabricate
+zero counts or hide problems.
+
+- **Status service: src/aip_loom/status.py** *(implemented — Chunk 10)*
+  - This is the **single authority** for computing a project's overall
+    status.  No other module may independently compute and present
+    project status — it must delegate to :func:`compute_status` here.
+  - Provides: ``compute_status(root)`` → ``StatusReport``,
+    ``HealthLevel`` (enum), ``StatusReport`` (frozen dataclass),
+    ``ChunkStatusSummary``, ``LedgerStatusSummary``,
+    ``GitStatusSummary``, ``LockStatusSummary``.
+  - **Honest above all**: Status never fabricates zero counts or hides
+    problems.  If the project cannot be loaded, the report reflects
+    that failure rather than pretending everything is fine.
+  - **Single data structure**: ``StatusReport`` is the same structure
+    used for Rich terminal output and JSON output.  No divergent logic.
+  - **Compose, don't duplicate**: Status reuses ``load_project()``,
+    ``validate_project()``, ``git_status()``, and lock detection
+    rather than computing state independently.
+  - **Health classification**: ``HealthLevel`` enum with three levels:
+    ``HEALTHY`` (no errors, no warnings requiring action),
+    ``DEGRADED`` (warnings but no errors — e.g. pending reviews,
+    dirty checksums), ``BLOCKED`` (structural errors — missing files,
+    broken references, load failures, stale locks, recovery files).
+  - **Recovery awareness**: If ``RECOVERY.md`` exists (left after a
+    Git commit failure during reconcile), it is surfaced as a
+    ``RECOVERY_FILE_EXISTS`` warning and the health is ``BLOCKED``.
+  - **Stale lock detection**: Stale locks (dead PID) are reported
+    with ``STALE_LOCK_DETECTED`` warning and the health is ``BLOCKED``.
+  - **Next actions**: The report includes suggested next actions
+    based on the current state, ordered by priority.
+  - **Lock state**: Uses ``_read_lock_file()`` from ``lock.py`` to
+    detect and parse the lock file.  Stale lock detection uses PID
+    liveness checking.
+  - **Git branch**: Reports current branch name via ``git branch
+    --show-current``.
+  - **to_dict()**: ``StatusReport.to_dict()`` produces a complete
+    JSON-serialisable dictionary used by the ``--json`` CLI output.
+  - **CLI integration**: The ``status`` CLI command delegates to
+    ``compute_status()`` via ``_run_status()``.  Supports ``--json``
+    output.  HEALTHY and DEGRADED return exit code 0; BLOCKED returns
+    exit code 1.
+  - Error codes used: ``PROJECT_MALFORMED`` (for blocked status).
+  - Warning codes used: ``RECOVERY_FILE_EXISTS``, ``STALE_LOCK_DETECTED``
+    (plus all validation warning codes from the ``ValidationResult``).
+
 ## Brief / Context Selection
 - Brief context engine: src/aip_loom/brief_context.py *(not yet implemented — Chunk 11)*
 - Token counting: src/aip_loom/tokens.py *(not yet implemented — Chunk 11)*
@@ -336,7 +386,7 @@ frontmatter regex, or chunk sorting elsewhere in the codebase is a
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
 
 ## Project Initialisation

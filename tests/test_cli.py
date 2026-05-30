@@ -169,16 +169,61 @@ class TestInitCommand:
 # ---------------------------------------------------------------------------
 
 
-class TestPlaceholderStatus:
-    def test_status_exits_nonzero(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["status"])
-        assert result.exit_code != 0
+class TestStatusCommand:
+    """Real status command tests via CLI."""
 
-    def test_status_json_has_not_implemented(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["status", "--json"])
-        data = _parse_json_output(result.output)
-        assert data["code"] == NOT_IMPLEMENTED
-        assert data["command"] == "status"
+    def test_status_on_initialized_project(self, runner: CliRunner) -> None:
+        """Status succeeds on a freshly initialized project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "status-project")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                result = runner.invoke(app, ["status", "--json"])
+            finally:
+                os.chdir(original_cwd)
+            data = _parse_json_output(result.output)
+            assert data["ok"] is True
+            assert data["command"] == "status"
+            assert data["data"]["health"] == "healthy"
+
+    def test_status_on_no_project_fails(self, runner: CliRunner) -> None:
+        """Status fails when run outside a project directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                result = runner.invoke(app, ["status", "--json"])
+            finally:
+                os.chdir(original_cwd)
+            data = _parse_json_output(result.output)
+            assert data["ok"] is False
+            assert data["data"]["health"] == "blocked"
+
+    def test_status_exits_zero_on_healthy_project(self, runner: CliRunner) -> None:
+        """Status exits 0 on a healthy project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "exit-zero")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                result = runner.invoke(app, ["status"])
+            finally:
+                os.chdir(original_cwd)
+            assert result.exit_code == 0
+
+    def test_status_exits_nonzero_on_no_project(self, runner: CliRunner) -> None:
+        """Status exits 1 when no project is found."""
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                result = runner.invoke(app, ["status"])
+            finally:
+                os.chdir(original_cwd)
+            assert result.exit_code != 0
 
 
 class TestValidateCommand:
@@ -321,18 +366,41 @@ class TestUnknownCommand:
 
 
 class TestNoFilesystemMutation:
-    """Placeholder commands (not init) must leave the filesystem untouched.
+    """Non-init commands must leave the filesystem untouched.
 
-    Init is excluded because it is a real command that intentionally
-    creates files.  The remaining placeholder commands must not create
-    any files.
+    Status, validate, brief, inspect, and reconcile must not create
+    or modify any files.  Status and validate are real implementations
+    that read project state but never write; brief/inspect/reconcile
+    are still placeholders.
     """
 
+    def test_status_does_not_create_files(self, runner: CliRunner) -> None:
+        """Status command does not create or modify files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "status-mutation-test")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                pre_files = {str(p) for p in Path(project_dir).rglob("*") if p.is_file()}
+                pre_contents = {p: Path(p).read_bytes() for p in pre_files}
+                runner.invoke(app, ["status", "--json"])
+                post_files = {str(p) for p in Path(project_dir).rglob("*") if p.is_file()}
+                post_contents = {p: Path(p).read_bytes() for p in post_files if p in pre_contents}
+            finally:
+                os.chdir(original_cwd)
+            assert pre_files == post_files, (
+                f"Status created files: {post_files - pre_files}"
+            )
+            for f in pre_files:
+                if f in post_contents:
+                    assert pre_contents[f] == post_contents[f], f"Status modified file: {f}"
+
     def test_no_mutation_from_placeholders(self, runner: CliRunner) -> None:
+        """Placeholder commands (brief, inspect, reconcile) leave filesystem untouched."""
         with tempfile.TemporaryDirectory() as tmp:
             pre_files = set(Path(tmp).rglob("*"))
             for cmd in [
-                ["status"],
                 ["brief", "C-0001"],
                 ["inspect", "C-0001"],
                 ["reconcile", "C-0001"],

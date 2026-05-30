@@ -17,11 +17,20 @@ import typer
 from pathlib import Path
 
 from . import __version__
-from .errors import NOT_IMPLEMENTED, PROJECT_MALFORMED, PROJECT_NOT_FOUND, LoomError, LoomWarning
+from .errors import (
+    NOT_IMPLEMENTED,
+    PROJECT_MALFORMED,
+    PROJECT_NOT_FOUND,
+    RECOVERY_FILE_EXISTS,
+    STALE_LOCK_DETECTED,
+    LoomError,
+    LoomWarning,
+)
 from .init import InitError, init_project
-from .project import ProjectError, ValidationResult, load_project, validate_project
 from .output import render_result
+from .project import ProjectError, ValidationResult, load_project, validate_project
 from .results import CommandResult
+from .status import HealthLevel, StatusReport, compute_status
 
 # ---------------------------------------------------------------------------
 # Typer application
@@ -105,13 +114,81 @@ def _run_init(name: str, project_type: str, project_dir: str | None) -> CommandR
     )
 
 
-def _stub_status() -> CommandResult:
-    """Placeholder: will be implemented in Chunk 10."""
-    return CommandResult.failure(
-        command="status",
-        code=NOT_IMPLEMENTED,
-        message="The 'status' command is not yet implemented.",
-    )
+def _run_status() -> CommandResult:
+    """Real status service — delegates to :func:`compute_status`."""
+    root = Path.cwd()
+    report = compute_status(root)
+
+    # Build data payload from the StatusReport
+    data = report.to_dict()
+
+    # Collect errors and warnings from the report
+    all_errors: list[LoomError] = list(report.load_errors)
+    all_warnings: list[LoomWarning] = list(report.load_warnings)
+    if report.validation is not None:
+        all_errors.extend(report.validation.errors)
+        all_warnings.extend(report.validation.warnings)
+
+    # Add recovery file warning if present
+    if report.recovery_file_exists:
+        all_warnings.append(
+            LoomWarning(
+                code=RECOVERY_FILE_EXISTS,
+                message="RECOVERY.md exists — a previous reconcile may have failed.",
+                detail={"file": str(Path(root) / "RECOVERY.md")},
+            )
+        )
+
+    # Add stale lock warning if present
+    if report.lock.is_stale:
+        all_warnings.append(
+            LoomWarning(
+                code=STALE_LOCK_DETECTED,
+                message=(
+                    f"Stale lock detected: PID {report.lock.lock_info.pid} "
+                    f"(command: {report.lock.lock_info.command!r}) is dead."
+                ),
+                detail={
+                    "pid": report.lock.lock_info.pid,
+                    "command": report.lock.lock_info.command,
+                },
+            )
+        )
+
+    # Determine success/failure based on health
+    if report.health == HealthLevel.HEALTHY:
+        message = f"Project '{report.project_name}' is healthy ({report.chunks.total} chunks)"
+        return CommandResult.success(
+            command="status",
+            message=message,
+            data=data,
+            warnings=all_warnings,
+        )
+    elif report.health == HealthLevel.DEGRADED:
+        message = (
+            f"Project '{report.project_name}' is degraded "
+            f"({report.warning_count} warnings, {report.chunks.total} chunks)"
+        )
+        return CommandResult.success(
+            command="status",
+            message=message,
+            data=data,
+            warnings=all_warnings,
+        )
+    else:
+        # BLOCKED
+        message = (
+            f"Project '{report.project_name}' is blocked "
+            f"({report.error_count} errors, {report.warning_count} warnings)"
+        )
+        return CommandResult.failure(
+            command="status",
+            code=PROJECT_MALFORMED,
+            message=message,
+            errors=all_errors if all_errors else None,
+            data=data,
+            warnings=all_warnings,
+        )
 
 
 def _run_validate(chunk: str | None) -> CommandResult:
@@ -228,7 +305,7 @@ def status(
     json_output: bool = JsonFlag,
 ) -> None:
     """Show project status dashboard."""
-    result = _stub_status()
+    result = _run_status()
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)
 
