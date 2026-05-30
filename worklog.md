@@ -70,3 +70,28 @@ Stage Summary:
 - _find_git_binary() with GIT_BINARY_MISSING error for missing git
 - Pre-commit hook failures surfaced honestly (not suppressed)
 - All 378 tests pass, commit eb295f4 pushed to origin/main
+---
+Task ID: 1
+Agent: Main Agent
+Task: Implement Chunk 07 — Transaction Workspace and Snapshot/Recovery Primitives
+
+Work Log:
+- Pulled latest repo (commit eb295f4)
+- Read all existing modules: errors.py, fs.py, layout.py, lock.py, git.py, checksum.py
+- Performed Before-Code Ritual: documented files to touch, reusable patterns, anti-patterns
+- Added 6 new error codes to errors.py: TX_ALREADY_ACTIVE, TX_NOT_ACTIVE, TX_SNAPSHOT_FAILED, TX_RESTORE_FAILED, TX_FILE_NOT_SNAPSHOTTED, TX_HASH_MISMATCH
+- Created src/aip_loom/transaction.py with: TransactionWorkspace, TransactionError, TransactionStatus, SnapshotEntry, TransactionManifest, FailureInjector protocol, NoopFailureInjector
+- Created tests/test_transaction.py with 54 comprehensive tests
+- All 432 tests pass (54 new + 378 existing)
+- Updated .agent/PATTERN_REGISTRY.md with transaction workspace entry and mandatory rule
+- Committed and pushed to remote
+
+Stage Summary:
+- src/aip_loom/transaction.py: Single authority for transactional file operations
+- Semantics-agnostic: only stages, snapshots, restores, and cleans up
+- Snapshot before modify: copies files and records SHA-256 hash
+- Hash verification on restore: mismatches produce TX_HASH_MISMATCH
+- No evidence destruction: workspace preserved on restore failure
+- Failure injection protocol for testing rollback paths
+- Workspace layout: .aip-loom/tmp/<txid>/ with manifest.json, staged/, snapshots/
+- All 432 tests pass, commit 5d3ffdd pushed to origin/main
