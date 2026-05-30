@@ -10,15 +10,16 @@ must never pretend to succeed.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 
 from pathlib import Path
 
 from . import __version__
-from .errors import NOT_IMPLEMENTED, LoomError
+from .errors import NOT_IMPLEMENTED, PROJECT_MALFORMED, PROJECT_NOT_FOUND, LoomError, LoomWarning
 from .init import InitError, init_project
+from .project import ProjectError, ValidationResult, load_project, validate_project
 from .output import render_result
 from .results import CommandResult
 
@@ -113,13 +114,60 @@ def _stub_status() -> CommandResult:
     )
 
 
-def _stub_validate(chunk: str | None) -> CommandResult:
-    """Placeholder: will be implemented in Chunk 09."""
-    return CommandResult.failure(
-        command="validate",
-        code=NOT_IMPLEMENTED,
-        message=f"The 'validate' command is not yet implemented. (chunk={chunk!r})",
-    )
+def _run_validate(chunk: str | None) -> CommandResult:
+    """Real validate service — delegates to load_project + validate_project."""
+    root = Path.cwd()
+
+    try:
+        state = load_project(root)
+    except ProjectError as exc:
+        return CommandResult.failure(
+            command="validate",
+            code=exc.loom_error.code,
+            message=exc.loom_error.message,
+            errors=[exc.loom_error],
+        )
+
+    result = validate_project(state, chunk_scope=chunk)
+
+    # Build data payload
+    chunk_count = len(state.chunks)
+    ledger_counts = {
+        "decisions": len(state.decisions_ledger.entries) if state.decisions_ledger else 0,
+        "threads": len(state.threads_ledger.entries) if state.threads_ledger else 0,
+        "questions": len(state.questions_ledger.entries) if state.questions_ledger else 0,
+    }
+
+    data: dict[str, Any] = {
+        "root": str(root),
+        "chunks": chunk_count,
+        "ledgers": ledger_counts,
+        "error_count": len(result.errors),
+        "warning_count": len(result.warnings),
+    }
+
+    if chunk:
+        data["chunk_scope"] = chunk
+
+    all_warnings = list(result.warnings)
+    all_errors = list(result.errors)
+
+    if result.ok:
+        return CommandResult.success(
+            command="validate",
+            message=f"Validation passed ({chunk_count} chunks, {len(all_warnings)} warnings)",
+            data=data,
+            warnings=all_warnings,
+        )
+    else:
+        return CommandResult.failure(
+            command="validate",
+            code=result.errors[0].code if result.errors else PROJECT_MALFORMED,
+            message=f"Validation failed with {len(all_errors)} error(s)",
+            errors=all_errors,
+            data=data,
+            warnings=all_warnings,
+        )
 
 
 def _stub_brief(
@@ -191,7 +239,7 @@ def validate(
     json_output: bool = JsonFlag,
 ) -> None:
     """Validate project structure and data integrity."""
-    result = _stub_validate(chunk=chunk)
+    result = _run_validate(chunk=chunk)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)
 

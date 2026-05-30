@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from aip_loom.cli import app
-from aip_loom.errors import FIELD_INVALID, NOT_IMPLEMENTED, PROJECT_ALREADY_EXISTS
+from aip_loom.errors import FIELD_INVALID, NOT_IMPLEMENTED, PROJECT_ALREADY_EXISTS, PROJECT_NOT_FOUND
 from typer.testing import CliRunner
 
 
@@ -181,16 +181,91 @@ class TestPlaceholderStatus:
         assert data["command"] == "status"
 
 
-class TestPlaceholderValidate:
-    def test_validate_exits_nonzero(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["validate"])
-        assert result.exit_code != 0
+class TestValidateCommand:
+    """Real validate command tests via CLI."""
 
-    def test_validate_json_has_not_implemented(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["validate", "--json"])
-        data = _parse_json_output(result.output)
-        assert data["code"] == NOT_IMPLEMENTED
-        assert data["command"] == "validate"
+    def test_validate_on_initialized_project(self, runner: CliRunner) -> None:
+        """Validate succeeds on a freshly initialized project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "valid-project")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            # Change cwd to project dir for validate
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                result = runner.invoke(app, ["validate", "--json"])
+            finally:
+                os.chdir(original_cwd)
+            data = _parse_json_output(result.output)
+            assert data["ok"] is True
+            assert data["command"] == "validate"
+
+    def test_validate_on_no_project_fails(self, runner: CliRunner) -> None:
+        """Validate fails when run outside a project directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                result = runner.invoke(app, ["validate", "--json"])
+            finally:
+                os.chdir(original_cwd)
+            data = _parse_json_output(result.output)
+            assert data["ok"] is False
+            assert data["code"] == PROJECT_NOT_FOUND
+
+    def test_validate_json_envelope_shape(self, runner: CliRunner) -> None:
+        """Validate --json returns the standard envelope shape."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "envelope-test")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                result = runner.invoke(app, ["validate", "--json"])
+            finally:
+                os.chdir(original_cwd)
+            data = _parse_json_output(result.output)
+            for key in ("ok", "command", "code", "message", "data", "warnings", "errors"):
+                assert key in data, f"Missing envelope field: {key}"
+
+    def test_validate_exits_zero_on_clean_project(self, runner: CliRunner) -> None:
+        """Validate exits 0 on a clean, freshly initialized project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "clean-project")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                result = runner.invoke(app, ["validate"])
+            finally:
+                os.chdir(original_cwd)
+            assert result.exit_code == 0
+
+    def test_validate_exits_nonzero_on_no_project(self, runner: CliRunner) -> None:
+        """Validate exits 1 when no project is found."""
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                result = runner.invoke(app, ["validate"])
+            finally:
+                os.chdir(original_cwd)
+            assert result.exit_code != 0
+
+    def test_validate_chunk_flag(self, runner: CliRunner) -> None:
+        """Validate --chunk flag is accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "chunk-test")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(project_dir)
+                result = runner.invoke(app, ["validate", "--chunk", "C-0001", "--json"])
+            finally:
+                os.chdir(original_cwd)
+            data = _parse_json_output(result.output)
+            assert data["command"] == "validate"
+            assert data["data"].get("chunk_scope") == "C-0001"
 
 
 class TestPlaceholderBrief:
@@ -258,7 +333,6 @@ class TestNoFilesystemMutation:
             pre_files = set(Path(tmp).rglob("*"))
             for cmd in [
                 ["status"],
-                ["validate"],
                 ["brief", "C-0001"],
                 ["inspect", "C-0001"],
                 ["reconcile", "C-0001"],

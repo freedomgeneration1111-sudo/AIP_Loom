@@ -196,8 +196,57 @@ violation** unless explicitly justified and registered here.
     ``GIT_BINARY_MISSING`` (all defined in ``errors.py`` since Chunk 01).
 
 ## Validation
-- Project loader: src/aip_loom/project.py *(not yet implemented — Chunk 09)*
-- Validation passes: src/aip_loom/validate.py *(not yet implemented — Chunk 09)*
+
+**Mandatory rule (Chunk 09):** Project loading and validation **must** go
+through `project.py` only.  No other module may read and assemble the
+project state independently.  Validation must be side-effect-free.
+
+- **Project loader: src/aip_loom/project.py** *(implemented — Chunk 09)*
+  - This is the **single authority** for loading an entire AIP_Loom
+    project into memory and validating its structural and semantic
+    integrity.  No other module may read and assemble the project state
+    independently — it must delegate to :func:`load_project` here.
+  - Provides: ``load_project(root)`` → ``ProjectState``,
+    ``validate_project(state, chunk_scope)`` → ``ValidationResult``,
+    ``ProjectError``, ``ProjectState``, ``ChunkData``,
+    ``ValidationResult``.
+  - **Single loading authority**: ``load_project`` is the only function
+    that reads all canonical files, parses them, and assembles a
+    coherent ``ProjectState``.  Every downstream command (status, brief,
+    reconcile, inspect) uses this single loader.
+  - **Honest partial loading**: If some files are malformed or missing,
+    ``load_project`` still returns a ``ProjectState`` with
+    ``load_errors`` populated.  It never fabricates default state to
+    hide failures.  A missing ledger is an error (``None`` field), not
+    an empty ledger with zero entries.
+  - **Validation is pure**: ``validate_project`` performs side-effect-free
+    integrity checks.  It **never** repairs, auto-fixes, or writes
+    files.  Dirty checksums are reported, not corrected.  Broken
+    references are flagged, not patched.
+  - **Validation passes**: (1) missing required files, (2) schema
+    violations (captured during loading), (3) duplicate IDs across
+    chunks and ledgers, (4) broken references (chunk_id, blocked_by,
+    distillate node references), (5) checksum mismatches (dirty files),
+    (6) chunk order issues (manifest vs disk), (7) pending review items.
+  - **Chunk scoping**: Validation supports ``chunk_scope`` parameter so
+    that a single chunk can be checked in isolation.
+  - **Pending review reporting**: Ledger entries with
+    ``review_state=pending`` are reported as warnings (not errors).
+  - **Uses existing modules**: Loading and validation use
+    ``yaml_io.py``, ``schemas.py``, ``layout.py``, ``checksum.py``,
+    ``frontmatter.py``, ``ids.py``, and ``chunk_order.py``.  No ad-hoc
+    YAML parsing, checksum computation, or ID extraction elsewhere.
+  - Error codes used: ``VALIDATION_DUPLICATE_ID``,
+    ``VALIDATION_BROKEN_REFERENCE``, ``VALIDATION_MISSING_FILE``,
+    ``VALIDATION_CHUNK_ORDER_MISMATCH``, ``PROJECT_NOT_FOUND``,
+    ``YAML_PARSE_ERROR``, ``SCHEMA_VALIDATION_FAILED``,
+    ``FILE_NOT_FOUND``, ``ID_DUPLICATE``.
+  - Warning codes used: ``VALIDATION_DIRTY_CHECKSUM``,
+    ``VALIDATION_PENDING_REVIEW``,
+    ``CHUNK_ORDER_FALLBACK_WARNING``, ``CHUNK_ORDER_FALLBACK_USED``.
+  - **CLI integration**: The ``validate`` CLI command delegates to
+    ``load_project`` + ``validate_project`` via ``_run_validate()``.
+    Supports ``--chunk`` (scope) and ``--json`` output.
 
 ## IDs, Checksums, and Chunk Order
 
@@ -287,7 +336,7 @@ frontmatter regex, or chunk sorting elsewhere in the codebase is a
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
 
 ## Project Initialisation
