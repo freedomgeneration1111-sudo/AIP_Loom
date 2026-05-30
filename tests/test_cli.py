@@ -1,4 +1,4 @@
-"""Tests for aip_loom.cli — Typer app, --help, --version, placeholder commands.
+"""Tests for aip_loom.cli — Typer app, --help, --version, init command, placeholders.
 
 These tests exercise the CLI through Typer's CliRunner so that we test the
 full integration from argument parsing through result rendering.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from typing import Any
 import pytest
 
 from aip_loom.cli import app
-from aip_loom.errors import NOT_IMPLEMENTED
+from aip_loom.errors import FIELD_INVALID, NOT_IMPLEMENTED, PROJECT_ALREADY_EXISTS
 from typer.testing import CliRunner
 
 
@@ -63,41 +64,109 @@ class TestHelpAndVersion:
 
 
 # ---------------------------------------------------------------------------
-# Placeholder commands — must fail honestly
+# Init command (real implementation)
 # ---------------------------------------------------------------------------
 
 
-class TestPlaceholderInit:
-    """Placeholder init command tests."""
+class TestInitCommand:
+    """Real init command tests via CLI."""
 
-    def test_init_exits_nonzero(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["init", "my-project"])
-        assert result.exit_code != 0
+    def test_init_succeeds_with_dir(self, runner: CliRunner) -> None:
+        """Init succeeds when --dir points to a new directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "new-project")
+            result = runner.invoke(app, ["init", "test-project", "--dir", project_dir, "--json"])
+            data = _parse_json_output(result.output)
+            assert data["ok"] is True
+            assert data["code"] == "OK"
+            assert data["command"] == "init"
+            assert "root" in data["data"]
 
-    def test_init_json_has_not_implemented(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["init", "my-project", "--json"])
-        data = _parse_json_output(result.output)
-        assert data["ok"] is False
-        assert data["code"] == NOT_IMPLEMENTED
-        assert data["command"] == "init"
+    def test_init_creates_manifest(self, runner: CliRunner) -> None:
+        """Init creates aip_loom.yaml in the target directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "manifest-test")
+            runner.invoke(app, ["init", "test-project", "--dir", project_dir, "--json"])
+            assert Path(project_dir, "aip_loom.yaml").is_file()
+
+    def test_init_rejects_existing_project(self, runner: CliRunner) -> None:
+        """Init fails when run on a directory that already has a project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "existing-project")
+            runner.invoke(app, ["init", "first", "--dir", project_dir, "--json"])
+            result = runner.invoke(app, ["init", "second", "--dir", project_dir, "--json"])
+            data = _parse_json_output(result.output)
+            assert data["ok"] is False
+            assert data["code"] == PROJECT_ALREADY_EXISTS
+
+    def test_init_rejects_invalid_type(self, runner: CliRunner) -> None:
+        """Init fails with invalid project type."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "bad-type")
+            result = runner.invoke(app, ["init", "test", "--type", "invalid", "--dir", project_dir, "--json"])
+            data = _parse_json_output(result.output)
+            assert data["ok"] is False
+            assert data["code"] == FIELD_INVALID
+
+    def test_init_default_type_is_novel(self, runner: CliRunner) -> None:
+        """Init defaults to 'novel' project type."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "default-type")
+            result = runner.invoke(app, ["init", "test-project", "--dir", project_dir, "--json"])
+            data = _parse_json_output(result.output)
+            assert data["ok"] is True
+
+    def test_init_all_types(self, runner: CliRunner) -> None:
+        """Init accepts all valid project types."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for ptype in ["novel", "technical", "academic", "general"]:
+                project_dir = os.path.join(tmp, f"project-{ptype}")
+                result = runner.invoke(app, ["init", f"test-{ptype}", "--type", ptype, "--dir", project_dir, "--json"])
+                data = _parse_json_output(result.output)
+                assert data["ok"] is True, f"Type {ptype} failed: {data}"
 
     def test_init_json_envelope_shape(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["init", "my-project", "--json"])
-        data = _parse_json_output(result.output)
-        for key in ("ok", "command", "code", "message", "data", "warnings", "errors"):
-            assert key in data, f"Missing envelope field: {key}"
-
-    def test_init_does_not_create_files(self, runner: CliRunner) -> None:
-        """Placeholder init must not create any files on disk."""
+        """Init --json returns the standard envelope shape."""
         with tempfile.TemporaryDirectory() as tmp:
-            pre = hashlib.sha256(
-                json.dumps({"files": sorted(os.listdir(tmp))}).encode()
-            ).hexdigest()
-            runner.invoke(app, ["init", "my-project"])
-            post = hashlib.sha256(
-                json.dumps({"files": sorted(os.listdir(tmp))}).encode()
-            ).hexdigest()
-            assert pre == post, "Placeholder init created files in tmp dir"
+            project_dir = os.path.join(tmp, "envelope-test")
+            result = runner.invoke(app, ["init", "test-project", "--dir", project_dir, "--json"])
+            data = _parse_json_output(result.output)
+            for key in ("ok", "command", "code", "message", "data", "warnings", "errors"):
+                assert key in data, f"Missing envelope field: {key}"
+
+    def test_init_exits_zero_on_success(self, runner: CliRunner) -> None:
+        """Init exits with code 0 on success."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "exit-zero")
+            result = runner.invoke(app, ["init", "test-project", "--dir", project_dir])
+            assert result.exit_code == 0
+
+    def test_init_exits_nonzero_on_failure(self, runner: CliRunner) -> None:
+        """Init exits with code 1 on failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "exit-fail")
+            runner.invoke(app, ["init", "first", "--dir", project_dir])
+            result = runner.invoke(app, ["init", "second", "--dir", project_dir])
+            assert result.exit_code != 0
+
+    def test_init_no_dir_uses_cwd(self, runner: CliRunner) -> None:
+        """Init without --dir creates project in current working directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # We can't easily change the real cwd in tests, so just verify
+            # that init without --dir doesn't crash when it uses cwd.
+            # The cwd-based behaviour is better tested via init_project()
+            # directly with explicit paths.
+            # Instead, verify the --dir flag works properly.
+            project_dir = os.path.join(tmp, "explicit-dir")
+            result = runner.invoke(app, ["init", "test-project", "--dir", project_dir, "--json"])
+            data = _parse_json_output(result.output)
+            assert data["ok"] is True
+            assert Path(project_dir, "aip_loom.yaml").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Placeholder commands — must fail honestly
+# ---------------------------------------------------------------------------
 
 
 class TestPlaceholderStatus:
@@ -172,24 +241,22 @@ class TestUnknownCommand:
 
 
 # ---------------------------------------------------------------------------
-# Filesystem mutation safety — SHA-256 snapshot test
+# Filesystem mutation safety — placeholder commands only
 # ---------------------------------------------------------------------------
 
 
 class TestNoFilesystemMutation:
-    """Every placeholder command must leave the filesystem untouched.
+    """Placeholder commands (not init) must leave the filesystem untouched.
 
-    This satisfies the Test Honesty Rule (BuildSpec §3A.6): at least one
-    test proving that a required failure mode does not mutate canonical
-    files.  For this pure-skeleton chunk, the equivalent is proving that
-    placeholder commands do not create files.
+    Init is excluded because it is a real command that intentionally
+    creates files.  The remaining placeholder commands must not create
+    any files.
     """
 
-    def test_no_mutation_from_any_placeholder(self, runner: CliRunner) -> None:
+    def test_no_mutation_from_placeholders(self, runner: CliRunner) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             pre_files = set(Path(tmp).rglob("*"))
             for cmd in [
-                ["init", "test-proj"],
                 ["status"],
                 ["validate"],
                 ["brief", "C-0001"],

@@ -287,5 +287,59 @@ frontmatter regex, or chunk sorting elsewhere in the codebase is a
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
+
+## Project Initialisation
+
+**Mandatory rule (Chunk 08):** Project creation and scaffolding **must**
+go through the init service only.  No other module may create the project
+directory tree, manifest, ledgers, or initial files directly.
+
+- **Init service: src/aip_loom/init.py** *(implemented — Chunk 08)*
+  - This is the **single authority** for creating a new AIP_Loom project.
+    No other module may create the project directory tree or initial files.
+  - Provides: ``init_project(root, name, project_type)``, ``InitError``,
+    ``InitResult`` (frozen dataclass).
+  - **Create-or-fail semantics**: If any step fails, all partial artefacts
+    are cleaned up.  The target directory is left in the same state as
+    before the call (or removed entirely if we created it).
+  - **No fake approved content**: The distillate placeholder is created with
+    an empty ``nodes`` list.  No fabricated summaries, decisions, or
+    approval states are ever written.
+  - **Schema-valid output**: Every file written during init validates against
+    the corresponding Pydantic model in ``schemas.py``.
+  - **Path safety**: All path construction goes through ``ProjectLayout``.
+    All file writes go through ``fs.safe_write_text()``.
+  - **YAML gateway**: All YAML serialisation goes through ``yaml_io.dump_yaml_string()``.
+    Model instances are constructed and validated before serialisation.
+  - **Transaction safety**: ``TransactionWorkspace`` is used to snapshot files
+    that might be overwritten.  On failure, ``restore()`` is called to roll
+    back any partial writes.
+  - **Git best-effort**: Git initialisation (``git init``, ``git add``, ``git commit``)
+    is attempted but never fatal.  If Git is unavailable or fails, a
+    ``GIT_INIT_SKIPPED`` warning is returned but the project is still
+    considered successfully initialised.
+  - **Project type validation**: The ``project_type`` parameter is validated
+    against the ``ProjectType`` enum before any files are created.  Invalid
+    types raise ``InitError`` with ``FIELD_INVALID``.
+  - **Existing project detection**: If ``aip_loom.yaml`` already exists in
+    the target directory, init fails with ``PROJECT_ALREADY_EXISTS``.
+    Existing manifests are never modified.
+  - **Created structure**:
+    - ``aip_loom.yaml`` — project manifest (``ProjectManifest``)
+    - ``chunks/`` — empty directory for chunk Markdown files
+    - ``ledgers/decisions.yaml`` — empty decision ledger (``DecisionLedger``)
+    - ``ledgers/threads.yaml`` — empty thread ledger (``ThreadLedger``)
+    - ``ledgers/questions.yaml`` — empty question ledger (``QuestionLedger``)
+    - ``distillate.yaml`` — empty distillate (``Distillate``)
+    - ``sessions.yaml`` — empty session log (``SessionLog``)
+    - ``comments.yaml`` — empty comment log (``CommentLog``)
+    - ``archive/`` — empty directory for archived chunks
+    - ``.aip-loom/`` — control directory (with ``staging/`` subdirectory)
+  - **CLI integration**: The ``init`` CLI command delegates to ``init_project()``
+    via ``_run_init()``.  Supports ``--type`` (project type) and ``--dir``
+    (project directory) options.  ``--json`` output includes root path,
+    git_initialised, and git_commit_created.
+  - Error codes used: ``PROJECT_ALREADY_EXISTS``, ``FIELD_INVALID``,
+    ``FILE_WRITE_ERROR``.  Warning code: ``GIT_INIT_SKIPPED``.

@@ -14,8 +14,11 @@ from typing import Optional
 
 import typer
 
+from pathlib import Path
+
 from . import __version__
-from .errors import NOT_IMPLEMENTED
+from .errors import NOT_IMPLEMENTED, LoomError
+from .init import InitError, init_project
 from .output import render_result
 from .results import CommandResult
 
@@ -70,12 +73,34 @@ JsonFlag = typer.Option(False, "--json", help="Output result as JSON.")
 # and the CLI handler stays unchanged.
 
 
-def _stub_init(name: str, project_type: str) -> CommandResult:
-    """Placeholder: will be implemented in Chunk 08."""
-    return CommandResult.failure(
+def _run_init(name: str, project_type: str, project_dir: str | None) -> CommandResult:
+    """Real init service — delegates to :func:`init_project`."""
+    # Determine project root: use explicit dir or current working directory
+    if project_dir:
+        root = Path(project_dir).resolve()
+    else:
+        root = Path.cwd()
+
+    try:
+        result = init_project(root=root, name=name, project_type=project_type)
+    except InitError as exc:
+        return CommandResult.failure(
+            command="init",
+            code=exc.loom_error.code,
+            message=exc.loom_error.message,
+            errors=[exc.loom_error],
+        )
+
+    data = {
+        "root": str(result.root),
+        "git_initialized": result.git_initialized,
+        "git_commit_created": result.git_commit_created,
+    }
+    return CommandResult.success(
         command="init",
-        code=NOT_IMPLEMENTED,
-        message=f"The 'init' command is not yet implemented. (name={name!r}, type={project_type!r})",
+        message=f"Project '{name}' initialised at {result.root}",
+        data=data,
+        warnings=list(result.warnings),
     )
 
 
@@ -140,11 +165,12 @@ def _stub_reconcile(
 @app.command()
 def init(
     name: str = typer.Argument(..., help="Project name."),
-    type: str = typer.Option("novel", "--type", "-t", help="Project type (novel, technical, etc.)."),
+    type: str = typer.Option("novel", "--type", "-t", help="Project type (novel, technical, academic, general)."),
+    directory: Optional[str] = typer.Option(None, "--dir", "-d", help="Project directory (defaults to current directory)."),
     json_output: bool = JsonFlag,
 ) -> None:
     """Initialise a new AIP_Loom project."""
-    result = _stub_init(name=name, project_type=type)
+    result = _run_init(name=name, project_type=type, project_dir=directory)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)
 
