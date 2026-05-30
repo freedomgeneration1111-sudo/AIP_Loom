@@ -326,15 +326,33 @@ class TestPlaceholderBrief:
 
 
 class TestPlaceholderInspect:
-    def test_inspect_exits_nonzero(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["inspect", "C-0001"])
-        assert result.exit_code != 0
+    """Inspect is now a real command (Chunk 11).  These tests verify it
+    works correctly from the CLI layer.
+    """
 
-    def test_inspect_json_has_not_implemented(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["inspect", "C-0001", "--json"])
-        data = _parse_json_output(result.output)
-        assert data["code"] == NOT_IMPLEMENTED
-        assert data["command"] == "inspect"
+    def test_inspect_nonexistent_project_fails(self, runner: CliRunner) -> None:
+        """Inspect on a non-project directory exits nonzero."""
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                result = runner.invoke(app, ["inspect", "C-0001"])
+                assert result.exit_code != 0
+            finally:
+                os.chdir(old_cwd)
+
+    def test_inspect_json_on_nonexistent_project(self, runner: CliRunner) -> None:
+        """Inspect --json on a non-project directory returns failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                result = runner.invoke(app, ["inspect", "C-0001", "--json"])
+                data = _parse_json_output(result.output)
+                assert data["command"] == "inspect"
+                assert data["ok"] is False
+            finally:
+                os.chdir(old_cwd)
 
 
 class TestPlaceholderReconcile:

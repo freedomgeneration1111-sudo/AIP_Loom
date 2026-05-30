@@ -17,7 +17,9 @@ import typer
 from pathlib import Path
 
 from . import __version__
+from .brief_context import select_context
 from .errors import (
+    CHUNK_NOT_FOUND,
     NOT_IMPLEMENTED,
     PROJECT_MALFORMED,
     PROJECT_NOT_FOUND,
@@ -260,12 +262,68 @@ def _stub_brief(
     )
 
 
-def _stub_inspect(chunk: str) -> CommandResult:
-    """Placeholder: will be implemented in Chunk 11."""
-    return CommandResult.failure(
+def _run_inspect(chunk: str) -> CommandResult:
+    """Real inspect service — delegates to load_project + select_context.
+
+    Inspect is a read-only command that shows what context ``brief``
+    would select for a given chunk, without writing any brief file.
+    It uses the **same** context selection logic as ``brief`` via
+    :func:`select_context` from :mod:`aip_loom.brief_context`.
+    """
+    root = Path.cwd()
+
+    # 1. Load project
+    try:
+        state = load_project(root)
+    except ProjectError as exc:
+        return CommandResult.failure(
+            command="inspect",
+            code=exc.loom_error.code,
+            message=exc.loom_error.message,
+            errors=[exc.loom_error],
+        )
+
+    # 2. Select context using the shared engine
+    context = select_context(state, chunk_id=chunk)
+
+    # 3. Build result
+    all_warnings: list[LoomWarning] = list(context.warnings)
+    all_errors: list[LoomError] = list(context.errors)
+
+    # Also include load warnings/errors from project state
+    all_warnings.extend(state.load_warnings)
+    all_errors.extend(state.load_errors)
+
+    data = context.to_dict()
+
+    if context.target_chunk is None:
+        # Chunk not found — this is a failure
+        return CommandResult.failure(
+            command="inspect",
+            code=CHUNK_NOT_FOUND,
+            message=f"Chunk {chunk!r} not found in project",
+            errors=all_errors if all_errors else None,
+            data=data,
+            warnings=all_warnings,
+        )
+
+    # Success — context was selected (may have warnings)
+    section_count = len(context.sections)
+    dropped_count = len(context.dropped_sections)
+    token_count = context.total_token_estimate.token_count
+
+    message = (
+        f"Context for {chunk}: {section_count} section(s), "
+        f"~{token_count} tokens"
+    )
+    if dropped_count > 0:
+        message += f" ({dropped_count} dropped due to budget)"
+
+    return CommandResult.success(
         command="inspect",
-        code=NOT_IMPLEMENTED,
-        message=f"The 'inspect' command is not yet implemented. (chunk={chunk!r})",
+        message=message,
+        data=data,
+        warnings=all_warnings,
     )
 
 
@@ -340,7 +398,7 @@ def inspect(
     json_output: bool = JsonFlag,
 ) -> None:
     """Inspect chunk context without writing a brief."""
-    result = _stub_inspect(chunk=chunk)
+    result = _run_inspect(chunk=chunk)
     render_result(result, use_json=json_output)
     raise typer.Exit(code=result.exit_code)
 

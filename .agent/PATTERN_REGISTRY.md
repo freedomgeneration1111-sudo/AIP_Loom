@@ -377,8 +377,68 @@ zero counts or hide problems.
     (plus all validation warning codes from the ``ValidationResult``).
 
 ## Brief / Context Selection
-- Brief context engine: src/aip_loom/brief_context.py *(not yet implemented — Chunk 11)*
-- Token counting: src/aip_loom/tokens.py *(not yet implemented — Chunk 11)*
+
+**Mandatory rule (Chunk 11):** Context selection for both `inspect` and
+`brief` **must** go through `brief_context.py` only.  No other module may
+implement its own context selection logic.  Token estimation **must** go
+through `tokens.py` only.  Duplicating selection or estimation code
+elsewhere is a **spec violation**.
+
+- **Brief context engine: src/aip_loom/brief_context.py** *(implemented — Chunk 11)*
+  - This is the **single authority** for selecting the context that
+    ``brief`` would assemble for a given chunk.  Both ``inspect`` and
+    ``brief`` must call :func:`select_context` here — no other module
+    may implement its own context selection logic.  This prevents the
+    primary anti-pattern of parallel implementations diverging over time.
+  - Provides: ``select_context(state, chunk_id, token_budget)``
+    → ``SelectedContext``, ``ContextSection``, ``SelectedContext``,
+    ``DEFAULT_TOKEN_BUDGET``.
+  - **Shared logic**: ``inspect`` and ``brief`` use the **same** context
+    selection function.  ``inspect`` is a read-only preview of what
+    ``brief`` would select; it must never duplicate the selection code.
+  - **Priority-based selection**: Sections are ordered by priority:
+    0 = chunk frontmatter (mandatory), 1 = chunk prose (mandatory),
+    2 = distillate node, 3 = scoped decisions, 4 = scoped threads,
+    5 = adjacent summaries, 6 = global decisions, 7 = global threads,
+    8 = unresolved questions.  Mandatory sections are never dropped.
+  - **Token budget aware**: Sections that would overflow the budget are
+    dropped from lowest priority upward.  Dropped sections are reported
+    in ``dropped_sections``.  Budget overflow emits a
+    ``BRIEF_BUDGET_OVERFLOW`` warning.
+  - **Honest about gaps**: If a scoped ledger is missing or malformed,
+    a ``BRIEF_ORPHAN_CHUNK`` warning is emitted — never silently skipped.
+  - **No file writes**: This module is pure computation.  It never writes
+    to disk, even when used by ``brief``.
+  - **Deterministic**: Given the same project state and chunk ID, the
+    output is always the same.
+  - **to_dict()**: ``SelectedContext.to_dict()`` produces a complete
+    JSON-serialisable dictionary used by the ``--json`` CLI output.
+  - Error codes used: ``CHUNK_NOT_FOUND``.
+  - Warning codes used: ``BRIEF_BUDGET_OVERFLOW``, ``BRIEF_ORPHAN_CHUNK``,
+    ``TOKEN_COUNT_APPROXIMATE``.
+
+- **Token estimation: src/aip_loom/tokens.py** *(implemented — Chunk 11)*
+  - This is the **single authority** for estimating token counts across
+    all AIP_Loom commands.  Both ``inspect`` and ``brief`` must use
+    :func:`estimate_text_tokens` here — no other module may implement
+    its own token counting logic.
+  - Provides: ``estimate_text_tokens(text)`` → ``TokenEstimate``,
+    ``estimate_tokens(*texts)`` → ``TokenEstimate``, ``TokenEstimate``
+    (frozen dataclass).
+  - **Consistent estimation**: Uses tiktoken with ``cl100k_base`` encoding
+    if available, otherwise falls back to the ``len(text) // 4`` heuristic.
+  - **Approximation flag**: When the heuristic is used, a
+    ``TOKEN_COUNT_APPROXIMATE`` warning is included in the result.
+  - **Deterministic**: Given the same input, always returns the same count.
+  - **to_dict()**: ``TokenEstimate.to_dict()`` produces a JSON-serialisable
+    dictionary.
+  - Warning code used: ``TOKEN_COUNT_APPROXIMATE``.
+
+- **CLI integration (inspect)**: The ``inspect`` CLI command delegates to
+  ``load_project()`` + ``select_context()`` via ``_run_inspect()``.
+  Supports ``--json`` output.  Unknown chunk returns exit code 1.
+  Rich dashboard shows: token budget, selected sections, dropped sections,
+  ledger references, distillate node, adjacent summaries, warnings/errors.
 
 ## Reconcile
 - Update parser: src/aip_loom/update_parser.py *(not yet implemented — Chunk 13)*
@@ -386,7 +446,7 @@ zero counts or hide problems.
 - Reconcile apply: src/aip_loom/reconcile_apply.py *(not yet implemented — Chunk 15)*
 
 ## CLI and Output
-- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10)*
+- CLI entry point: src/aip_loom/cli.py *(implemented — Chunk 01, init wired in Chunk 08, validate wired in Chunk 09, status wired in Chunk 10, inspect wired in Chunk 11)*
 - Result rendering: src/aip_loom/output.py *(implemented — Chunk 01)*
 
 ## Project Initialisation

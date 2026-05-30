@@ -62,6 +62,11 @@ def _render_rich(result: CommandResult) -> None:
         _render_status_dashboard(result)
         return
 
+    # -- inspect command gets a dedicated context renderer -------------------
+    if result.command == "inspect" and result.data and "target_chunk_id" in result.data:
+        _render_inspect_dashboard(result)
+        return
+
     # -- summary line -------------------------------------------------------
     if result.ok:
         console.print(
@@ -268,6 +273,204 @@ def _render_status_dashboard(result: CommandResult) -> None:
         for i, action in enumerate(actions, 1):
             action_table.add_row(str(i), action)
         console.print(action_table)
+
+    # -- Warnings ------------------------------------------------------------
+    if result.warnings:
+        table = Table(title="Warnings", show_header=True, header_style="bold yellow")
+        table.add_column("Code", style="yellow")
+        table.add_column("Message")
+        for w in result.warnings:
+            table.add_row(w.code, w.message)
+        console.print(table)
+
+    # -- Errors --------------------------------------------------------------
+    if result.errors:
+        table = Table(title="Errors", show_header=True, header_style="bold red")
+        table.add_column("Code", style="red")
+        table.add_column("Message")
+        for e in result.errors:
+            table.add_row(e.code, e.message)
+        console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Inspect context renderer
+# ---------------------------------------------------------------------------
+
+
+def _render_inspect_dashboard(result: CommandResult) -> None:
+    """Render an inspect command result as a Rich context dashboard.
+
+    This shows:
+    - Target chunk info
+    - Token estimate and budget
+    - Selected sections (what brief would include)
+    - Dropped sections (what brief would omit due to budget)
+    - Scoped decisions and threads
+    - Distillate node info
+    - Adjacent summaries
+    - Warnings and errors
+    """
+    data = result.data
+
+    # -- Header ---------------------------------------------------------------
+    chunk_id = data.get("target_chunk_id", "???")
+    chunk_found = data.get("target_chunk_found", False)
+
+    if result.ok:
+        border_style = "green"
+        status_text = "[bold green]FOUND[/]"
+    else:
+        border_style = "red"
+        status_text = "[bold red]NOT FOUND[/]"
+
+    console.print()
+    console.print(
+        Panel(
+            f"{status_text}  {result.message}",
+            title=f"aip-loom inspect {chunk_id}",
+            border_style=border_style,
+        )
+    )
+
+    if not chunk_found:
+        # Nothing more to show
+        if result.errors:
+            table = Table(title="Errors", show_header=True, header_style="bold red")
+            table.add_column("Code", style="red")
+            table.add_column("Message")
+            for e in result.errors:
+                table.add_row(e.code, e.message)
+            console.print(table)
+        return
+
+    # -- Token budget ---------------------------------------------------------
+    tokens = data.get("total_tokens", {})
+    budget = data.get("token_budget", 0)
+    budget_exceeded = data.get("budget_exceeded", False)
+    token_count = tokens.get("token_count", 0)
+    is_approx = tokens.get("is_approximate", True)
+    encoding = tokens.get("encoding_name", "unknown")
+
+    budget_table = Table(title="Token Budget", show_header=False)
+    budget_table.add_column("Field", style="bold")
+    budget_table.add_column("Value")
+    budget_table.add_row("Estimated tokens", str(token_count))
+    budget_table.add_row("Budget", str(budget))
+    budget_table.add_row("Encoding", encoding)
+    if is_approx:
+        budget_table.add_row("Precision", "[yellow]approximate (install tiktoken)[/]")
+    else:
+        budget_table.add_row("Precision", "[green]exact (tiktoken)[/]")
+    if budget_exceeded:
+        budget_table.add_row("Budget status", "[red]EXCEEDED[/]")
+    else:
+        budget_table.add_row("Budget status", "[green]within budget[/]")
+    console.print(budget_table)
+
+    # -- Selected sections ----------------------------------------------------
+    sections = data.get("sections", [])
+    if sections:
+        section_table = Table(
+            title="Selected Context",
+            show_header=True,
+            header_style="bold",
+        )
+        section_table.add_column("Type", style="cyan")
+        section_table.add_column("Source ID")
+        section_table.add_column("Tokens", justify="right")
+        section_table.add_column("Priority", justify="right")
+        for s in sections:
+            section_table.add_row(
+                s.get("type", ""),
+                s.get("source_id", ""),
+                str(s.get("tokens", 0)),
+                str(s.get("priority", "")),
+            )
+        console.print(section_table)
+
+    # -- Dropped sections -----------------------------------------------------
+    dropped = data.get("dropped_sections", [])
+    if dropped:
+        drop_table = Table(
+            title="Dropped (Budget Overflow)",
+            show_header=True,
+            header_style="bold yellow",
+        )
+        drop_table.add_column("Type", style="yellow")
+        drop_table.add_column("Source ID")
+        drop_table.add_column("Tokens", justify="right")
+        drop_table.add_column("Priority", justify="right")
+        for s in dropped:
+            drop_table.add_row(
+                s.get("type", ""),
+                s.get("source_id", ""),
+                str(s.get("tokens", 0)),
+                str(s.get("priority", "")),
+            )
+        console.print(drop_table)
+
+    # -- Scoped ledgers -------------------------------------------------------
+    scoped_dec = data.get("scoped_decisions", [])
+    scoped_threads = data.get("scoped_threads", [])
+    global_dec = data.get("global_decisions", [])
+    global_threads = data.get("global_threads", [])
+    unresolved_q = data.get("unresolved_questions", [])
+
+    ledger_table = Table(title="Ledger References", show_header=True, header_style="bold")
+    ledger_table.add_column("Category")
+    ledger_table.add_column("IDs")
+    ledger_table.add_row(
+        "Scoped decisions",
+        ", ".join(scoped_dec) if scoped_dec else "(none)",
+    )
+    ledger_table.add_row(
+        "Scoped threads",
+        ", ".join(scoped_threads) if scoped_threads else "(none)",
+    )
+    ledger_table.add_row(
+        "Global decisions",
+        ", ".join(global_dec) if global_dec else "(none)",
+    )
+    ledger_table.add_row(
+        "Global threads",
+        ", ".join(global_threads) if global_threads else "(none)",
+    )
+    ledger_table.add_row(
+        "Unresolved questions",
+        ", ".join(unresolved_q) if unresolved_q else "(none)",
+    )
+    console.print(ledger_table)
+
+    # -- Distillate node ------------------------------------------------------
+    distillate = data.get("distillate_node")
+    if distillate:
+        dist_table = Table(title="Distillate Node", show_header=False)
+        dist_table.add_column("Field", style="bold")
+        dist_table.add_column("Value")
+        dist_table.add_row("Title", str(distillate.get("title", "")))
+        if distillate.get("summary"):
+            dist_table.add_row("Summary", str(distillate.get("summary", "")))
+        if distillate.get("key_decisions"):
+            dist_table.add_row("Key decisions", ", ".join(distillate.get("key_decisions", [])))
+        if distillate.get("open_threads"):
+            dist_table.add_row("Open threads", ", ".join(distillate.get("open_threads", [])))
+        console.print(dist_table)
+
+    # -- Adjacent summaries ---------------------------------------------------
+    adjacent = data.get("adjacent_summaries", [])
+    if adjacent:
+        adj_table = Table(title="Adjacent Chunks", show_header=True, header_style="bold")
+        adj_table.add_column("Chunk ID")
+        adj_table.add_column("Title")
+        adj_table.add_column("Summary")
+        for n in adjacent:
+            adj_table.add_row(
+                str(n.get("chunk_id", "")),
+                str(n.get("title", "")),
+                str(n.get("summary", "(no summary)")),
+            )
+        console.print(adj_table)
 
     # -- Warnings ------------------------------------------------------------
     if result.warnings:
