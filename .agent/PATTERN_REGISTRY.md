@@ -61,10 +61,82 @@ patterns registered here.
 - Validation passes: src/aip_loom/validate.py *(not yet implemented — Chunk 09)*
 
 ## IDs, Checksums, and Chunk Order
-- ID allocator: src/aip_loom/ids.py *(not yet implemented — Chunk 04)*
-- Checksum: src/aip_loom/checksum.py *(not yet implemented — Chunk 04)*
-- Frontmatter: src/aip_loom/frontmatter.py *(not yet implemented — Chunk 04)*
-- Chunk order: src/aip_loom/chunk_order.py *(not yet implemented — Chunk 04)*
+
+**Mandatory rule (Chunk 04):** ID allocation, checksum calculation,
+frontmatter parsing, and chunk order resolution **must** go through
+these four modules only.  Any ad-hoc ID computation, checksum hashing,
+frontmatter regex, or chunk sorting elsewhere in the codebase is a
+**spec violation**.
+
+- **ID allocator: src/aip_loom/ids.py** *(implemented — Chunk 04)*
+  - This is the **single authority** for allocating new sequential IDs.
+    No other module may compute or guess the next available ID.
+  - Provides: ``allocate_next_id(prefix, entries, id_attr="id")``,
+    ``extract_id_number(id_str)``, ``KNOWN_PREFIXES``.
+  - **Canonical-only rule**: The allocator reads *only* from validated
+    Pydantic model instances (canonical ledger state).  It must **never**
+    read from staged, archive, or unvalidated sources.  Violating this
+    rule can produce ID collisions from uncommitted or rolled-back state.
+  - **No gap-filling**: If D-0001 and D-0003 exist, the next ID is
+    D-0004, not D-0002.  Gap-filling introduces ordering confusion.
+  - **Prefix-scoped**: Each prefix (C, CH, D, T, Q, S, CM) has its own
+    independent sequence.
+  - Raises ``DuplicateIdError`` (code ``ID_DUPLICATE``) if duplicate IDs
+    are found for the same prefix.
+  - Raises ``InvalidIdError`` (code ``CHUNK_ID_INVALID``) if an ID
+    starts with the expected prefix but doesn't match the full pattern,
+    or if an unknown prefix is used.
+  - Empty entry list → first ID is ``{prefix}-0001``.
+
+- **Checksum: src/aip_loom/checksum.py** *(implemented — Chunk 04)*
+  - This is the **single authority** for computing prose-body checksums.
+    No other module may compute its own checksum.
+  - Provides: ``compute_prose_checksum(prose)``, ``CHECKSUM_ALGORITHM``.
+  - **Prose body only**: The checksum covers only the prose content
+    below the YAML frontmatter.  Frontmatter changes must not trigger
+    checksum mismatches.
+  - **LF normalization**: CRLF and bare CR are replaced with LF before
+    hashing.  Same prose → same checksum regardless of platform.
+  - **Trailing newline stripped**: A single trailing newline (if present)
+    is removed before hashing to avoid spurious mismatches from editor
+    newline handling.
+  - **No silent updates**: This module never writes to files or updates
+    schemas.  Checksums are computed on demand and returned as hex
+    strings.  Only explicit write operations may store them.
+  - Algorithm: SHA-256.
+
+- **Frontmatter: src/aip_loom/frontmatter.py** *(implemented — Chunk 04)*
+  - This is the **single authority** for parsing and writing Markdown
+    YAML frontmatter.  No other module may use ad-hoc regex or string
+    splitting to extract frontmatter.
+  - Provides: ``parse_frontmatter(text)`` → ``FrontmatterParseResult``,
+    ``write_frontmatter(frontmatter, prose_body)`` → ``str``,
+    ``split_frontmatter(text)`` → ``(yaml_str, prose_body)``.
+  - **No filename inference**: When frontmatter exists, the chunk ID is
+    taken from the frontmatter, never inferred from the filename.  This
+    module explicitly returns the frontmatter-parsed ID via
+    ``FrontmatterParseResult.frontmatter.id``.
+  - Uses ``yaml_io.load_yaml_string_as`` for YAML parsing (single-gateway
+    principle) and ``yaml_io.dump_yaml_string`` for YAML serialization.
+  - Raises ``FrontmatterParseError`` (carrying ``LoomError``) on:
+    missing opening delimiter, missing closing delimiter, empty
+    frontmatter, or YAML validation failure.
+
+- **Chunk order: src/aip_loom/chunk_order.py** *(implemented — Chunk 04)*
+  - This is the **single authority** for determining the canonical
+    ordering of chunks.  No other module may sort chunks independently.
+  - Provides: ``resolve_chunk_order(manifest, chunk_ids)``
+    → ``ChunkOrderResult``, ``natural_sort_key(s)``.
+  - **Manifest-respected**: If ``chunks.order`` is non-empty, that order
+    is canonical.  Chunks not in the manifest order are appended at the
+    end in natural sort order (with a warning).
+  - **Filename fallback with warning**: If ``chunks.order`` is empty or
+    missing, chunks are sorted by natural sort and a
+    ``CHUNK_ORDER_FALLBACK_USED`` warning is emitted.
+  - **No silent ordering**: The caller always receives both the ordered
+    list and any warnings.  Silent fallback is forbidden.
+  - ``ChunkOrderResult`` is frozen and includes ``used_manifest_order``
+    flag for downstream logic.
 
 ## Brief / Context Selection
 - Brief context engine: src/aip_loom/brief_context.py *(not yet implemented — Chunk 11)*
