@@ -113,7 +113,48 @@ or custom locking elsewhere in the codebase is a **spec violation**.
     diagnostics.
   - **Lock file format**: ``<pid>:<command>`` (e.g. ``12345:reconcile``).
 
-- Transaction workspace: src/aip_loom/transaction.py *(not yet implemented — Chunk 07)*
+- **Transaction workspace: src/aip_loom/transaction.py** *(implemented — Chunk 07)*
+  - This is the **single authority** for transactional file operations —
+    staging, snapshotting, restoring, and cleaning up.  Reconcile (Chunk 15)
+    and any other operation that modifies canonical state **must** use these
+    primitives rather than implementing local snapshot/restore behaviour.
+  - **Mandatory rule**: Any module that needs to modify canonical files with
+    rollback capability **must** use ``TransactionWorkspace`` for snapshots
+    and restores.  Implementing ad-hoc backup/restore logic elsewhere is a
+    **spec violation**.
+  - Provides: ``TransactionWorkspace(layout, failure_injector)``,
+    ``TransactionError``, ``TransactionStatus`` (enum),
+    ``SnapshotEntry`` (frozen dataclass), ``TransactionManifest`` (frozen dataclass),
+    ``FailureInjector`` (protocol), ``NoopFailureInjector``.
+  - **Semantics-agnostic**: Only stages, snapshots, restores, and cleans up.
+    Does **not** know about reconcile, update blocks, model output, or
+    chunk semantics.
+  - **Snapshot before modify**: ``snapshot_file(canonical_path)`` copies the
+    file to the workspace ``snapshots/`` directory and records a SHA-256
+    hash for restore verification.
+  - **Hash verification on restore**: ``restore()`` verifies the snapshot
+    content hash matches the recorded hash.  Mismatches produce
+    ``TX_HASH_MISMATCH`` and abort the restore.
+  - **Non-existent file tracking**: If a file does not exist at snapshot
+    time, ``existed=False`` is recorded.  On restore, such files are
+    deleted (if created during the transaction).
+  - **No evidence destruction**: On restore failure, the workspace is
+    **not** deleted.  Status is set to ``FAILED`` and the workspace is
+    preserved for forensic analysis.
+  - **Failure injection**: ``FailureInjector`` protocol allows tests to
+    inject failures at snapshot, stage, restore, and commit stages.
+    ``NoopFailureInjector`` is the production default.
+  - **Workspace layout**: ``.aip-loom/tmp/<txid>/`` with ``manifest.json``,
+    ``staged/``, and ``snapshots/`` subdirectories.
+  - **Manifest**: ``manifest.json`` records ``tx_id``, ``created_at``,
+    ``status``, and ``snapshots`` (list of entries).  Written on every
+    status change.
+  - **Idempotent snapshot**: Calling ``snapshot_file()`` on the same path
+    twice returns the existing entry without re-copying.
+  - Error codes used: ``TX_ALREADY_ACTIVE``, ``TX_NOT_ACTIVE``,
+    ``TX_SNAPSHOT_FAILED``, ``TX_RESTORE_FAILED``,
+    ``TX_FILE_NOT_SNAPSHOTTED``, ``TX_HASH_MISMATCH``,
+    ``PATH_UNSAFE``, ``CHECKSUM_MISMATCH``.
 
 ## Git
 
