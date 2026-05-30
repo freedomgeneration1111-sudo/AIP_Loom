@@ -44,3 +44,29 @@ Stage Summary:
 - 72 new tests covering positive + negative cases for all three modules
 - All key requirements met: ID validation before path construction, atomic write with fsync+replace, O_CREAT|O_EXCL locking, PID liveness, stale lock diagnostics with recovery instructions, no silent lock deletion, path traversal rejection, symlink escape rejection
 - Commit: feat(chunk-05): implement filesystem layout, atomic write, and locking
+---
+Task ID: 1
+Agent: Main Agent
+Task: Implement Chunk 06 — Git Wrapper for AIP_Loom
+
+Work Log:
+- Cloned/pulled latest AIP_Loom repo (commit 8d9dddf)
+- Read all existing modules: errors.py, results.py, schemas.py, yaml_io.py, fs.py, lock.py, layout.py, cli.py, output.py, __init__.py
+- Read all existing tests and conftest.py
+- Performed Before-Code Ritual: documented files to touch, reusable patterns, anti-patterns
+- Created src/aip_loom/git.py with: is_git_repo, git_status (→GitStatus), is_git_clean, git_add, git_commit, configure_local_git, GitError, GitStatus
+- Created tests/test_git.py with 39 comprehensive tests
+- Fixed missing LoomError import in test file
+- All 378 tests pass (39 new + 339 existing)
+- Updated .agent/PATTERN_REGISTRY.md with Git wrapper entry and mandatory rule
+- Committed and pushed to remote
+
+Stage Summary:
+- src/aip_loom/git.py: Single authority for all Git operations using subprocess only
+- GitStatus frozen dataclass with is_repo, clean, staged, unstaged, untracked, raw
+- GitError exception wrapping LoomError (consistent with existing pattern)
+- configure_local_git() for test isolation (no global config dependency)
+- _parse_porcelain() for structured git status parsing
+- _find_git_binary() with GIT_BINARY_MISSING error for missing git
+- Pre-commit hook failures surfaced honestly (not suppressed)
+- All 378 tests pass, commit eb295f4 pushed to origin/main
