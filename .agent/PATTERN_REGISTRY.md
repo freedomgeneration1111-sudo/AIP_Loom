@@ -116,7 +116,43 @@ or custom locking elsewhere in the codebase is a **spec violation**.
 - Transaction workspace: src/aip_loom/transaction.py *(not yet implemented — Chunk 07)*
 
 ## Git
-- Git wrapper: src/aip_loom/git.py *(not yet implemented — Chunk 06)*
+
+**Mandatory rule (Chunk 06):** All Git operations in AIP_Loom **must**
+go through this module only.  Direct ``subprocess.run(['git', ...])``
+calls or GitPython usage elsewhere in the codebase is a **spec
+violation** unless explicitly justified and registered here.
+
+- **Git wrapper: src/aip_loom/git.py** *(implemented — Chunk 06)*
+  - This is the **single authority** for all Git operations.  No other
+    module may call ``subprocess.run(['git', ...])`` directly or use
+    GitPython.
+  - Provides: ``is_git_repo(root)``, ``git_status(root)`` → ``GitStatus``,
+    ``is_git_clean(root)``, ``git_add(root, paths)``,
+    ``git_commit(root, message, allow_empty=False)``,
+    ``configure_local_git(root, user_name, user_email)``, ``GitError``,
+    ``GitStatus`` (frozen dataclass).
+  - **subprocess only**: Uses ``subprocess.run`` exclusively.  No GitPython,
+    no libgit2 bindings.
+  - **Capture both streams**: Every Git invocation captures both stdout
+    and stderr.  Stderr is never silently discarded.
+  - **Never hide errors**: Non-zero exit codes raise ``GitError`` with
+    full stderr content.  Pre-commit hook failures are not suppressed.
+  - **Binary check**: ``_find_git_binary()`` verifies ``git`` is on PATH
+    before any command.  Missing binary produces ``GIT_BINARY_MISSING``.
+  - **GitStatus structured result**: ``git_status()`` returns a frozen
+    dataclass with ``is_repo``, ``clean``, ``staged``, ``unstaged``,
+    ``untracked``, and ``raw`` fields.  No raw string parsing needed
+    by callers.
+  - **Commit failure is real failure**: ``git_commit()`` surfaces stderr
+    on failure.  Does not auto-restore writer data or treat failed
+    commits as no-ops.
+  - **Local test config**: ``configure_local_git()`` sets ``user.name``
+    and ``user.email`` in the repo-local config so tests do not depend
+    on global ``~/.gitconfig``.
+  - **Porcelain parsing**: ``_parse_porcelain()`` parses ``git status
+    --porcelain`` output into staged/unstaged/untracked categories.
+  - Error codes used: ``GIT_NOT_REPO``, ``GIT_DIRTY``, ``GIT_COMMIT_FAILED``,
+    ``GIT_BINARY_MISSING`` (all defined in ``errors.py`` since Chunk 01).
 
 ## Validation
 - Project loader: src/aip_loom/project.py *(not yet implemented — Chunk 09)*
